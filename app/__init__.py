@@ -12,7 +12,17 @@ def create_app() -> Flask:
     db.init_app(app)
     migrate.init_app(app, db)
     jwt.init_app(app)
-    CORS(app, resources={r"/api/*": {"origins": app.config["CORS_ORIGINS"]}})
+    cors_origins = app.config.get("CORS_ORIGINS", "*")
+    CORS(
+        app,
+        resources={
+            r"/api/*": {
+                "origins": cors_origins,
+                "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+                "allow_headers": ["Content-Type", "Authorization", "Accept", "X-Requested-With"],
+            }
+        },
+    )
 
     from . import models  # noqa: F401  (registrasi model untuk migrasi)
     from .routes import register_blueprints

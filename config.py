@@ -34,8 +34,8 @@ class DatabaseConfig:
 class AppConfig(DatabaseConfig):
     SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-change-me")
     JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "dev-jwt-secret-change-me")
-    JWT_ACCESS_TOKEN_EXPIRES = timedelta(hours=_int("JWT_ACCESS_HOURS", 12))
-    CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",") if o.strip()]
+    _raw_cors = os.getenv("CORS_ORIGINS", "*")
+    CORS_ORIGINS = "*" if "*" in _raw_cors else [o.strip() for o in _raw_cors.split(",") if o.strip()]
 
     MAX_PAGE_SIZE = _int("MAX_PAGE_SIZE", 500)
     BULK_CHUNK_SIZE = _int("BULK_CHUNK_SIZE", 1000)
