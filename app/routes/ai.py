@@ -119,16 +119,16 @@ def ai_clean():
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=90) as resp:
+        with urllib.request.urlopen(req, timeout=15) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
         text = payload["candidates"][0]["content"]["parts"][0]["text"]
         parsed = json.loads(text)
     except urllib.error.HTTPError as exc:
-        return jsonify(success=False, message=f"Gemini API error {exc.code}"), 502
+        return jsonify(success=False, isFallback=True, message=f"Gemini API error {exc.code}, menggunakan parser lokal"), 200
     except (urllib.error.URLError, TimeoutError):
-        return jsonify(success=False, message="Gagal menghubungi Gemini API"), 502
+        return jsonify(success=False, isFallback=True, message="Koneksi Gemini timeout/offline, menggunakan parser cerdas lokal"), 200
     except (KeyError, IndexError, ValueError):
-        return jsonify(success=False, message="Respons Gemini tidak valid"), 502
+        return jsonify(success=False, isFallback=True, message="Format respons Gemini tidak standar, menggunakan parser lokal"), 200
 
     items = parsed.get("items") or parsed.get("pengurus") or (parsed if isinstance(parsed, list) else [])
     return jsonify(
