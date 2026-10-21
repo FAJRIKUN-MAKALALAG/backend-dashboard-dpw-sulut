@@ -75,6 +75,7 @@ def get_my_referral_code():
             )
         ).count()
 
+        is_super = role == "SUPER_ADMIN"
         return jsonify({
             "isMemberLinked": False,
             "kodeReferral": code,
@@ -85,7 +86,7 @@ def get_my_referral_code():
             "dpd": claims.get("dpdAccess", "Sulawesi Utara"),
             "dpc": "-",
             "dprt": "-",
-            "ketuaLangsung": {
+            "ketuaLangsung": None if is_super else {
                 "nik": "0000000000000000",
                 "nama": "Ketua Umum DPP Partai NasDem",
                 "jabatan": "Ketua Umum DPP",
