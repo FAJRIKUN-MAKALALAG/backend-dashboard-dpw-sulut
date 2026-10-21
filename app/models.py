@@ -48,10 +48,17 @@ class Member(db.Model):
     pekerjaan = db.Column(db.String(100))
     status_ktp_verified = db.Column(db.Boolean, default=True)
 
+    kader_perekrut_kode_referral = db.Column(db.String(50), index=True)
     kader_perekrut_nama = db.Column(db.String(255), index=True)
-    kader_perekrut_nik = db.Column(db.String(16))
+    kader_perekrut_nik = db.Column(db.String(50), index=True)
     kader_perekrut_ekta = db.Column(db.String(50))
     kader_perekrut_jabatan = db.Column(db.String(150))
+
+    # Atribusi Ketua Langsung Otomatis (Hierarkis berdasarkan struktur organisasi)
+    ketua_langsung_nik = db.Column(db.String(50), index=True)
+    ketua_langsung_nama = db.Column(db.String(255))
+    ketua_langsung_jabatan = db.Column(db.String(150))
+    ketua_langsung_tingkat = db.Column(db.String(50))
 
     # Urutan tampil di matriks struktur (mengikuti urutan baris Excel saat import)
     urutan = db.Column(db.Integer, index=True)

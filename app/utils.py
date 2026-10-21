@@ -42,10 +42,15 @@ MEMBER_FIELDS = {
     "agama": "agama",
     "pekerjaan": "pekerjaan",
     "status_ktp_verified": "statusKtpVerified",
+    "kader_perekrut_kode_referral": "kaderPerekrutKodeReferral",
     "kader_perekrut_nama": "kaderPerekrutNama",
     "kader_perekrut_nik": "kaderPerekrutNik",
     "kader_perekrut_ekta": "kaderPerekrutEkta",
     "kader_perekrut_jabatan": "kaderPerekrutJabatan",
+    "ketua_langsung_nik": "ketuaLangsungNik",
+    "ketua_langsung_nama": "ketuaLangsungNama",
+    "ketua_langsung_jabatan": "ketuaLangsungJabatan",
+    "ketua_langsung_tingkat": "ketuaLangsungTingkat",
     "urutan": "urutan",
 }
 CAMEL_TO_DB = {v: k for k, v in MEMBER_FIELDS.items()}

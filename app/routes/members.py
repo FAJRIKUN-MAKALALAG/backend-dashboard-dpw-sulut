@@ -1,11 +1,12 @@
 from flask import Blueprint, current_app, jsonify, request
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import defer
 
 from ..auth import current_claims, login_required, super_admin_required
 from ..extensions import db
 from ..models import AuditLog, Member
+from ..services.referral_service import find_direct_leader
 from ..utils import (
     HEAVY_COLS,
     STATUS_VALUES,
@@ -31,6 +32,30 @@ def _audit(member_nik, member_name, action, reason, actor, dpd, prev=None, new=N
             dpd=dpd or "Sulawesi Utara",
         )
     )
+
+
+def _apply_referral_and_leader(values: dict):
+    """Mendeteksi perekrut dan menentukan Ketua Langsung secara hierarkis otomatis."""
+    ref_code = (values.get("kader_perekrut_kode_referral") or "").strip().upper()
+    recruiter = None
+    if ref_code:
+        recruiter = Member.query.filter(func.upper(Member.kode_referral) == ref_code).first()
+    elif values.get("kader_perekrut_nik"):
+        recruiter = Member.query.filter(Member.nik == values.get("kader_perekrut_nik")).first()
+
+    if recruiter:
+        values["kader_perekrut_kode_referral"] = recruiter.kode_referral
+        values["kader_perekrut_nama"] = recruiter.nama_lengkap
+        values["kader_perekrut_nik"] = recruiter.nik
+        values["kader_perekrut_ekta"] = recruiter.nomor_ekta
+        values["kader_perekrut_jabatan"] = recruiter.jabatan
+        leader = find_direct_leader(recruiter)
+        if leader:
+            values["ketua_langsung_nik"] = leader.get("nik")
+            values["ketua_langsung_nama"] = leader.get("nama")
+            values["ketua_langsung_jabatan"] = leader.get("jabatan")
+            values["ketua_langsung_tingkat"] = leader.get("tingkat")
+
 
 
 def _filtered_query(claims):
@@ -122,6 +147,7 @@ def create_member():
     if db.session.get(Member, nik):
         return jsonify(error="NIK sudah terdaftar"), 409
 
+    _apply_referral_and_leader(values)
     values["diubah_oleh"] = claims.get("adminName")
     m = Member(**values)
     db.session.add(m)
@@ -145,6 +171,7 @@ def update_member(nik):
     if "status" in values and values["status"] not in STATUS_VALUES:
         return jsonify(error="Status tidak valid"), 400
 
+    _apply_referral_and_leader(values)
     for k, v in values.items():
         setattr(m, k, v)
     m.diubah_oleh = claims.get("adminName")
@@ -218,6 +245,7 @@ def bulk_upsert():
             errors.append({"row": i, "nik": nik, "error": "Di luar cakupan wilayah akun"})
         else:
             seen.add(nik)
+            _apply_referral_and_leader(v)
             v["diubah_oleh"] = claims.get("adminName")
             valid[nik] = v
 
