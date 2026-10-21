@@ -39,11 +39,16 @@ def get_current_member(claims):
     # 3. Cari dari AppUser -> member_nik
     user_id = claims.get("sub")
     if user_id:
-        u = AppUser.query.filter(AppUser.id == user_id).first()
-        if u and u.member_nik:
-            m = Member.query.filter(Member.nik == u.member_nik).first()
-            if m:
-                return m
+        try:
+            import uuid as _uuid_lib
+            _uuid_lib.UUID(str(user_id))
+            u = AppUser.query.filter(AppUser.id == user_id).first()
+            if u and u.member_nik:
+                m = Member.query.filter(Member.nik == u.member_nik).first()
+                if m:
+                    return m
+        except (ValueError, TypeError):
+            pass
 
     return None
 

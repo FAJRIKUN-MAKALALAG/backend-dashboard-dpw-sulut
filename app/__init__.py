@@ -45,6 +45,17 @@ def create_app() -> Flask:
     def too_large(_):
         return jsonify(error="Ukuran request terlalu besar"), 413
 
+    @app.errorhandler(500)
+    @app.errorhandler(Exception)
+    def handle_exception(e):
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        import logging
+        logging.exception("Unhandled Server Exception: %s", e)
+        return jsonify(error="Terjadi kesalahan server internal", detail=str(e)), 500
+
     @jwt.unauthorized_loader
     def _unauth(msg):
         return jsonify(error="Token tidak ditemukan / tidak valid", detail=msg), 401

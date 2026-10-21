@@ -134,7 +134,7 @@ def apply_scope(query, claims: dict, model=Member):
         return query
     for col, key in (("dpd", "dpdAccess"), ("dpc", "dpcAccess"), ("dprt", "dprtAccess")):
         val = claims.get(key)
-        if val and val != "ALL":
+        if val and val != "ALL" and hasattr(model, col):
             query = query.filter(getattr(model, col) == val)
     return query
 
