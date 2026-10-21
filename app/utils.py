@@ -132,18 +132,47 @@ def is_global(claims: dict) -> bool:
 def apply_scope(query, claims: dict, model=Member):
     if is_global(claims):
         return query
-    for col, key in (("dpd", "dpdAccess"), ("dpc", "dpcAccess"), ("dprt", "dprtAccess")):
-        val = claims.get(key)
-        if val and val != "ALL" and hasattr(model, col):
-            query = query.filter(getattr(model, col) == val)
+    role = claims.get("role")
+
+    # 1. DPD filter: berlaku untuk ADMIN_DPD, ADMIN_DPC, ADMIN_DPRT
+    dpd_val = claims.get("dpdAccess")
+    if dpd_val and dpd_val != "ALL" and hasattr(model, "dpd"):
+        query = query.filter(getattr(model, "dpd") == dpd_val)
+
+    # 2. DPC filter: hanya membatasi ADMIN_DPC dan ADMIN_DPRT
+    # ADMIN_DPD berhak melihat SELURUH DPC di wilayah DPD-nya
+    if role in ("ADMIN_DPC", "ADMIN_DPRT"):
+        dpc_val = claims.get("dpcAccess")
+        if dpc_val and dpc_val not in ("ALL", "Umum (DPD)", "-", "") and hasattr(model, "dpc"):
+            query = query.filter(getattr(model, "dpc") == dpc_val)
+
+    # 3. DPRt filter: hanya membatasi ADMIN_DPRT
+    # ADMIN_DPD dan ADMIN_DPC berhak melihat SELURUH DPRt di bawah wilayahnya
+    if role == "ADMIN_DPRT":
+        dprt_val = claims.get("dprtAccess")
+        if dprt_val and dprt_val not in ("ALL", "Pusat/Umum", "-", "") and hasattr(model, "dprt"):
+            query = query.filter(getattr(model, "dprt") == dprt_val)
+
     return query
 
 
 def in_scope(claims: dict, dpd=None, dpc=None, dprt=None) -> bool:
     if is_global(claims):
         return True
-    for have, key in ((dpd, "dpdAccess"), (dpc, "dpcAccess"), (dprt, "dprtAccess")):
-        want = claims.get(key)
-        if want and want != "ALL" and have != want:
+    role = claims.get("role")
+
+    dpd_want = claims.get("dpdAccess")
+    if dpd_want and dpd_want != "ALL" and dpd != dpd_want:
+        return False
+
+    if role in ("ADMIN_DPC", "ADMIN_DPRT"):
+        dpc_want = claims.get("dpcAccess")
+        if dpc_want and dpc_want not in ("ALL", "Umum (DPD)", "-", "") and dpc != dpc_want:
             return False
+
+    if role == "ADMIN_DPRT":
+        dprt_want = claims.get("dprtAccess")
+        if dprt_want and dprt_want not in ("ALL", "Pusat/Umum", "-", "") and dprt != dprt_want:
+            return False
+
     return True

@@ -25,11 +25,27 @@ def determine_role(tingkat: str) -> str:
 
 
 def claims_for(u: AppUser) -> dict:
+    dpd_acc = u.dpd_access or "ALL"
+    dpc_acc = u.dpc_access or "ALL"
+    dprt_acc = u.dprt_access or "ALL"
+
+    # Peran DPD membawahi SELURUH DPC dan DPRt di DPD-nya
+    if u.role == "ADMIN_DPD":
+        dpc_acc = "ALL"
+        dprt_acc = "ALL"
+    # Peran DPC membawahi SELURUH DPRt di DPC-nya
+    elif u.role == "ADMIN_DPC":
+        dprt_acc = "ALL"
+    elif u.role in ("SUPER_ADMIN", "ADMIN_DPW"):
+        dpd_acc = "ALL"
+        dpc_acc = "ALL"
+        dprt_acc = "ALL"
+
     return {
         "role": u.role,
-        "dpdAccess": u.dpd_access or "ALL",
-        "dpcAccess": u.dpc_access or "ALL",
-        "dprtAccess": u.dprt_access or "ALL",
+        "dpdAccess": dpd_acc,
+        "dpcAccess": dpc_acc,
+        "dprtAccess": dprt_acc,
         "adminName": u.full_name,
         "adminNik": u.member_nik or u.username,
         "jabatan": u.jabatan or f"Admin {u.role}",
