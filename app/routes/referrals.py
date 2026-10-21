@@ -115,6 +115,40 @@ def get_my_referral_code():
     })
 
 
+@bp.get("/referrals/preview-by-nik/<nik>")
+@login_required
+def get_referral_preview_by_nik(nik: str):
+    """Mengambil preview profil referral untuk pengurus tertentu berdasarkan NIK (simulasi/inspeksi portal)."""
+    m = Member.query.filter(Member.nik == str(nik)).first()
+    if not m:
+        return jsonify(error="Data pengurus tidak ditemukan"), 404
+
+    code = generate_unique_referral_code(m)
+    leader = find_direct_leader(m)
+
+    recruits_count = Member.query.filter(
+        or_(
+            Member.kader_perekrut_kode_referral == code,
+            Member.kader_perekrut_nik == m.nik,
+        )
+    ).count()
+
+    return jsonify({
+        "isMemberLinked": True,
+        "kodeReferral": code,
+        "namaLengkap": m.nama_lengkap,
+        "nik": m.nik,
+        "nomorEkta": m.nomor_ekta,
+        "jabatan": m.jabatan,
+        "tingkatKepengurusan": m.tingkat_kepengurusan or "DPD",
+        "dpd": m.dpd,
+        "dpc": m.dpc,
+        "dprt": m.dprt,
+        "ketuaLangsung": leader,
+        "totalRecruits": recruits_count,
+    })
+
+
 @bp.get("/referrals/validate/<code>")
 def validate_referral_code(code: str):
     """

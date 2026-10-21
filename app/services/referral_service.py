@@ -120,6 +120,38 @@ def find_ketua_dpw():
     )
 
 
+def generate_unique_referral_code(member: Member) -> str:
+    """
+    Menghasilkan kode referral unik untuk pengurus.
+    Format: NSD-[TINGKAT]-[4 DIGIT HEX/ALFNUM]
+    Contoh: NSD-DPD-7K2X, NSD-DPC-9B41, NSD-KDR-8M1Q
+    """
+    if member.kode_referral and len(member.kode_referral.strip()) >= 5:
+        return member.kode_referral.strip().upper()
+
+    tingkat = (member.tingkat_kepengurusan or "KDR").upper().strip()
+    prefix = f"NSD-{tingkat[:3]}"
+
+    chars = string.ascii_uppercase + string.digits
+    # Hapus karakter ambigu seperti O, 0, I, 1
+    chars = chars.replace("O", "").replace("0", "").replace("I", "").replace("1", "")
+
+    for _ in range(50):
+        suffix = "".join(random.choices(chars, k=4))
+        code = f"{prefix}-{suffix}"
+        exists = Member.query.filter(func.upper(Member.kode_referral) == code).first()
+        if not exists:
+            member.kode_referral = code
+            db.session.commit()
+            return code
+
+    # Fallback dengan timestamp jika tabrakan terus
+    code = f"{prefix}-{random.randint(1000, 9999)}"
+    member.kode_referral = code
+    db.session.commit()
+    return code
+
+
 def find_direct_leader(member: Member) -> dict:
     """
     Menemukan Ketua Langsung secara hierarkis berdasarkan struktur organisasi:
@@ -138,6 +170,7 @@ def find_direct_leader(member: Member) -> dict:
             "nama": "Ketua DPW Partai NasDem Sulawesi Utara",
             "jabatan": "Ketua DPW",
             "tingkat": "DPW",
+            "kodeReferral": "NSD-DPW-SULUT",
         }
 
     tingkat = (member.tingkat_kepengurusan or "").upper().strip()
@@ -170,6 +203,7 @@ def find_direct_leader(member: Member) -> dict:
                 "nama": "Ketua Umum DPP Partai NasDem",
                 "jabatan": "Ketua Umum DPP",
                 "tingkat": "DPP",
+                "kodeReferral": "NSD-DPP-SURYA",
             }
         else:
             leader = find_ketua_dpw()
@@ -184,11 +218,15 @@ def find_direct_leader(member: Member) -> dict:
         )
 
     if leader and leader.nik != member.nik:
+        leader_code = leader.kode_referral
+        if not leader_code or len(leader_code.strip()) < 4:
+            leader_code = generate_unique_referral_code(leader)
         return {
             "nik": leader.nik,
             "nama": leader.nama_lengkap,
             "jabatan": leader.jabatan or f"Ketua {leader.tingkat_kepengurusan}",
             "tingkat": leader.tingkat_kepengurusan or "DPD",
+            "kodeReferral": leader_code,
         }
 
     # Fallback standar jika ketua langsung belum terisi di database
@@ -198,36 +236,5 @@ def find_direct_leader(member: Member) -> dict:
         "nama": f"Ketua {target_tingkat} NasDem {member.dpd if target_tingkat == 'DPD' else 'Sulawesi Utara'}",
         "jabatan": f"Ketua {target_tingkat}",
         "tingkat": target_tingkat,
+        "kodeReferral": f"NSD-{target_tingkat[:3]}-KETUA",
     }
-
-
-def generate_unique_referral_code(member: Member) -> str:
-    """
-    Menghasilkan kode referral unik untuk pengurus.
-    Format: NSD-[TINGKAT]-[4 DIGIT HEX/ALFNUM]
-    Contoh: NSD-DPD-7K2X, NSD-DPC-9B41, NSD-KDR-8M1Q
-    """
-    if member.kode_referral and len(member.kode_referral.strip()) >= 5:
-        return member.kode_referral.strip().upper()
-
-    tingkat = (member.tingkat_kepengurusan or "KDR").upper().strip()
-    prefix = f"NSD-{tingkat[:3]}"
-
-    chars = string.ascii_uppercase + string.digits
-    # Hapus karakter ambigu seperti O, 0, I, 1
-    chars = chars.replace("O", "").replace("0", "").replace("I", "").replace("1", "")
-
-    for _ in range(50):
-        suffix = "".join(random.choices(chars, k=4))
-        code = f"{prefix}-{suffix}"
-        exists = Member.query.filter(func.upper(Member.kode_referral) == code).first()
-        if not exists:
-            member.kode_referral = code
-            db.session.commit()
-            return code
-
-    # Fallback dengan timestamp jika tabrakan terus
-    code = f"{prefix}-{random.randint(1000, 9999)}"
-    member.kode_referral = code
-    db.session.commit()
-    return code
