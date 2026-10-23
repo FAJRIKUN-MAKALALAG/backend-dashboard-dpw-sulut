@@ -10,7 +10,7 @@ import random
 import string
 from sqlalchemy import func, or_
 from ..extensions import db
-from ..models import Member, AppUser
+from ..models import Member, AppUser, Position
 
 
 def is_ketua_position(jabatan: str) -> bool:
@@ -23,26 +23,29 @@ def is_ketua_position(jabatan: str) -> bool:
     return j.startswith("ketua")
 
 
+def _leader_query(*conditions):
+    """Cari orang berdasarkan JABATAN-nya (tabel positions), bukan ringkasan jabatan utama di members."""
+    return (
+        db.session.query(Member)
+        .join(Position, Position.member_nik == Member.nik)
+        .filter(*conditions)
+        .order_by(Position.urutan.asc().nullslast())
+    )
+
+
 def find_ketua_dprt(dpd: str, dpc: str, dprt: str):
     """Mencari Ketua DPRt di tingkat Desa/Kelurahan."""
     if not dprt or dprt in ("-", "Pusat/Umum"):
         return None
+    base = (
+        Position.dpd == dpd,
+        Position.dpc == dpc,
+        Position.dprt == dprt,
+        Position.tingkat_kepengurusan == "DPRt",
+    )
     return (
-        Member.query.filter(
-            Member.dpd == dpd,
-            Member.dpc == dpc,
-            Member.dprt == dprt,
-            Member.tingkat_kepengurusan == "DPRt",
-            Member.urutan == 1,
-        ).first()
-        or Member.query.filter(
-            Member.dpd == dpd,
-            Member.dpc == dpc,
-            Member.dprt == dprt,
-            Member.tingkat_kepengurusan == "DPRt",
-            Member.jabatan.ilike("Ketua%"),
-            ~Member.jabatan.ilike("Wakil%"),
-        ).first()
+        _leader_query(*base, Position.urutan == 1).first()
+        or _leader_query(*base, Position.jabatan.ilike("Ketua%"), ~Position.jabatan.ilike("Wakil%")).first()
     )
 
 
@@ -50,27 +53,11 @@ def find_ketua_dpc(dpd: str, dpc: str):
     """Mencari Ketua DPC di tingkat Kecamatan."""
     if not dpc or dpc in ("-", "Pusat/Umum"):
         return None
+    base = (Position.dpd == dpd, Position.dpc == dpc, Position.tingkat_kepengurusan == "DPC")
     return (
-        Member.query.filter(
-            Member.dpd == dpd,
-            Member.dpc == dpc,
-            Member.tingkat_kepengurusan == "DPC",
-            Member.urutan == 1,
-            Member.wilayah_penugasan.ilike("%PIMPINAN CABANG%"),
-        ).first()
-        or Member.query.filter(
-            Member.dpd == dpd,
-            Member.dpc == dpc,
-            Member.tingkat_kepengurusan == "DPC",
-            Member.urutan == 1,
-        ).first()
-        or Member.query.filter(
-            Member.dpd == dpd,
-            Member.dpc == dpc,
-            Member.tingkat_kepengurusan == "DPC",
-            Member.jabatan.ilike("Ketua%"),
-            ~Member.jabatan.ilike("Wakil%"),
-        ).first()
+        _leader_query(*base, Position.urutan == 1, Position.wilayah_penugasan.ilike("%PIMPINAN CABANG%")).first()
+        or _leader_query(*base, Position.urutan == 1).first()
+        or _leader_query(*base, Position.jabatan.ilike("Ketua%"), ~Position.jabatan.ilike("Wakil%")).first()
     )
 
 
@@ -78,40 +65,20 @@ def find_ketua_dpd(dpd: str):
     """Mencari Ketua DPD di tingkat Kabupaten/Kota."""
     if not dpd:
         return None
+    base = (Position.dpd == dpd, Position.tingkat_kepengurusan == "DPD")
     return (
-        Member.query.filter(
-            Member.dpd == dpd,
-            Member.tingkat_kepengurusan == "DPD",
-            Member.urutan == 1,
-            Member.wilayah_penugasan.ilike("%PIMPINAN DAERAH%"),
-        ).first()
-        or Member.query.filter(
-            Member.dpd == dpd,
-            Member.tingkat_kepengurusan == "DPD",
-            Member.urutan == 1,
-        ).first()
-        or Member.query.filter(
-            Member.dpd == dpd,
-            Member.tingkat_kepengurusan == "DPD",
-            Member.jabatan.ilike("Ketua%"),
-            ~Member.jabatan.ilike("Wakil%"),
-        ).first()
+        _leader_query(*base, Position.urutan == 1, Position.wilayah_penugasan.ilike("%PIMPINAN DAERAH%")).first()
+        or _leader_query(*base, Position.urutan == 1).first()
+        or _leader_query(*base, Position.jabatan.ilike("Ketua%"), ~Position.jabatan.ilike("Wakil%")).first()
     )
 
 
 def find_ketua_dpw():
     """Mencari Ketua DPW Partai NasDem Provinsi Sulawesi Utara."""
+    base = (Position.tingkat_kepengurusan == "DPW",)
     return (
-        Member.query.filter(
-            Member.tingkat_kepengurusan == "DPW",
-            Member.urutan == 1,
-            Member.wilayah_penugasan.ilike("%PIMPINAN WILAYAH%"),
-        ).first()
-        or Member.query.filter(
-            Member.tingkat_kepengurusan == "DPW",
-            Member.jabatan.ilike("Ketua%"),
-            ~Member.jabatan.ilike("Wakil%"),
-        ).first()
+        _leader_query(*base, Position.urutan == 1, Position.wilayah_penugasan.ilike("%PIMPINAN WILAYAH%")).first()
+        or _leader_query(*base, Position.jabatan.ilike("Ketua%"), ~Position.jabatan.ilike("Wakil%")).first()
         or Member.query.filter(
             Member.dpd.ilike("%Sulawesi Utara%"),
             Member.jabatan.ilike("Ketua%"),

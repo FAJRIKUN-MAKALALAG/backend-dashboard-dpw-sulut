@@ -68,6 +68,46 @@ class Member(db.Model):
 
     __table_args__ = (db.Index("idx_members_wilayah", "dpd", "dpc", "dprt"),)
 
+    # Kolom tingkat_kepengurusan/jabatan/wilayah_penugasan/nomor_sk/tanggal_sk/urutan di atas adalah
+    # RINGKASAN jabatan utama (dihitung otomatis dari tabel positions). Sumber kebenaran jabatan = Position.
+    positions = db.relationship(
+        "Position",
+        back_populates="member",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        lazy="select",
+    )
+
+
+class Position(db.Model):
+    """Satu jabatan struktural milik satu orang pada satu badan organisasi (DPW/DPD/DPC/DPRt).
+
+    Seorang kader (1 NIK) dapat memiliki banyak Position tanpa menggandakan data orangnya.
+    id = hash(nik, tingkat, dpd, dpc, dprt, wilayah_penugasan) sehingga import ulang bersifat idempoten.
+    """
+
+    __tablename__ = "positions"
+
+    id = db.Column(db.String(40), primary_key=True)
+    member_nik = db.Column(
+        db.String(50), db.ForeignKey("members.nik", ondelete="CASCADE"), nullable=False, index=True
+    )
+    tingkat_kepengurusan = db.Column(db.String(30), nullable=False, index=True)
+    dpd = db.Column(db.String(100), nullable=False, index=True)
+    dpc = db.Column(db.String(100), nullable=False, index=True)
+    dprt = db.Column(db.String(100), nullable=False, index=True)
+    wilayah_penugasan = db.Column(db.String(100))
+    jabatan = db.Column(db.String(150))
+    nomor_sk = db.Column(db.String(100))
+    tanggal_sk = db.Column(db.Date)
+    urutan = db.Column(db.Integer, index=True)
+    created_at = db.Column(db.DateTime(timezone=True), server_default=func.now())
+    updated_at = db.Column(db.DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    member = db.relationship("Member", back_populates="positions")
+
+    __table_args__ = (db.Index("idx_positions_wilayah", "dpd", "dpc", "dprt", "tingkat_kepengurusan"),)
+
 
 class AuditLog(db.Model):
     __tablename__ = "audit_logs"
@@ -108,7 +148,7 @@ class AppUser(db.Model):
     __tablename__ = "app_users"
 
     id = db.Column(UUID(as_uuid=True), primary_key=True, default=_uuid)
-    member_nik = db.Column(db.String(50), db.ForeignKey("members.nik", ondelete="SET NULL"), index=True)
+    member_nik = db.Column(db.String(50), index=True)
     nomor_ekta = db.Column(db.String(50))
     username = db.Column(db.String(100), unique=True, nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
