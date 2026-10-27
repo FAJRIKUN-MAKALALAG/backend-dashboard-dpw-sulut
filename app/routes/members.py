@@ -260,7 +260,7 @@ def _upsert_people(rows: dict, *, keep_domicile: bool, chunk: int):
     cols = sorted({k for v in rows.values() for k in v})
     skip = {"nik", *SUMMARY_COLS}
     if keep_domicile:
-        skip |= {"dpd", "dpc", "dprt", "status", "tanggal_bergabung"}
+        skip |= {"status", "tanggal_bergabung"}
     update_cols = [c for c in cols if c not in skip]
     items = [{c: v.get(c) for c in cols} for v in rows.values()]
     for part in _chunks(items, chunk):

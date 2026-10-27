@@ -141,6 +141,12 @@ def refresh_member_summary(member):
         member.nomor_sk = p.nomor_sk
         member.tanggal_sk = p.tanggal_sk
         member.urutan = p.urutan
+        if p.dpd:
+            member.dpd = p.dpd
+        if p.dpc and p.dpc != "-":
+            member.dpc = p.dpc
+        if p.dprt and p.dprt != "-":
+            member.dprt = p.dprt
     else:
         member.is_pengurus = False
         member.tingkat_kepengurusan = "Bukan Pengurus"
