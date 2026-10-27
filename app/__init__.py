@@ -16,10 +16,10 @@ def create_app() -> Flask:
     CORS(
         app,
         resources={
-            r"/api/*": {
+            r"/*": {
                 "origins": cors_origins,
                 "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-                "allow_headers": ["Content-Type", "Authorization", "Accept", "X-Requested-With"],
+                "allow_headers": ["Content-Type", "Authorization", "Accept", "X-Requested-With", "Origin"],
             }
         },
     )
@@ -63,5 +63,17 @@ def create_app() -> Flask:
     @jwt.expired_token_loader
     def _expired(_h, _p):
         return jsonify(error="Sesi berakhir, silakan login kembali"), 401
+
+    class ApiPrefixMiddleware:
+        def __init__(self, wsgi_app):
+            self.wsgi_app = wsgi_app
+
+        def __call__(self, environ, start_response):
+            path = environ.get("PATH_INFO", "")
+            if path and not path.startswith("/api") and not path.startswith("/static"):
+                environ["PATH_INFO"] = "/api" + path
+            return self.wsgi_app(environ, start_response)
+
+    app.wsgi_app = ApiPrefixMiddleware(app.wsgi_app)
 
     return app

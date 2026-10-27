@@ -141,6 +141,22 @@ def check_nik(nik):
     return jsonify(nik=nik, exists=exists)
 
 
+def check_tingkat_permission(role: str, tingkat: str) -> bool:
+    """Memastikan admin daerah tidak mengangkat pengurus di atas level wewenangnya."""
+    t = (tingkat or "").strip().upper()
+    if not t or t in ("BUKAN PENGURUS", "UMUM", "-", ""):
+        return True
+    if role in ("SUPER_ADMIN", "ADMIN_DPW"):
+        return True
+    if role == "ADMIN_DPD":
+        return t in ("DPD", "DPC", "DPRT", "RANTING")
+    if role == "ADMIN_DPC":
+        return t in ("DPC", "DPRT", "RANTING")
+    if role == "ADMIN_DPRT":
+        return t in ("DPRT", "RANTING")
+    return False
+
+
 @bp.post("/members")
 @login_required
 def create_member():
@@ -156,6 +172,11 @@ def create_member():
     values.setdefault("dprt", "-")
     if not in_scope(claims, values["dpd"], values["dpc"], values["dprt"]):
         return jsonify(error="Wilayah di luar cakupan akses akun Anda"), 403
+
+    tingkat = values.get("tingkat_kepengurusan")
+    if not check_tingkat_permission(claims.get("role"), tingkat):
+        return jsonify(error=f"Akun Anda tidak memiliki wewenang untuk menetapkan tingkat kepengurusan {tingkat}"), 403
+
     if db.session.get(Member, nik):
         return jsonify(error="NIK sudah terdaftar"), 409
 
@@ -184,6 +205,11 @@ def update_member(nik):
     if not in_scope(claims, values.get("dpd", m.dpd), values.get("dpc", m.dpc), values.get("dprt", m.dprt)):
         if not member_in_scope(claims, m):
             return jsonify(error="Wilayah tujuan di luar cakupan akses akun Anda"), 403
+
+    tingkat = values.get("tingkat_kepengurusan")
+    if tingkat and not check_tingkat_permission(claims.get("role"), tingkat):
+        return jsonify(error=f"Akun Anda tidak memiliki wewenang untuk menetapkan tingkat kepengurusan {tingkat}"), 403
+
     if "status" in values and values["status"] not in STATUS_VALUES:
         return jsonify(error="Status tidak valid"), 400
 
