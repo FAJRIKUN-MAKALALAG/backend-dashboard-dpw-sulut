@@ -87,6 +87,17 @@ python wsgi.py
 > **Backend Aktif di:** `http://localhost:5000`  
 > Cek status backend di browser: `http://localhost:5000/api/health` (harus menampilkan `status: ok, database: up`).
 
+### 1.7 Memantau Log API & Debugging Error:
+Setiap pemanggilan API otomatis tercatat secara mendalam dan terpusat:
+* **Terminal Console:** Menampilkan log berwarna dengan status HTTP, endpoint URL, durasi eksekusi (ms), dan IP pengakses secara *realtime*.
+* **Berkas `logs/api.log`:** Menyimpan seluruh riwayat pemanggilan API (INFO, WARNING, ERROR) dengan rotasi otomatis (maks 10MB x 5 file).
+* **Berkas `logs/error.log`:** Khusus merekam kegagalan request (status 4xx & 5xx) beserta rincian:
+  * Parameter URL & Body JSON request yang dikirimkan klien.
+  * Pesan error yang dikembalikan server.
+  * Full Python Stack Traceback jika terjadi unhandled error / bug.
+* **Endpoint Diagnostik (Super Admin):**
+  * `GET /api/logs/recent?type=error&limit=100` (melihat 100 baris error terakhir langsung via API / browser).
+
 ---
 
 ## Langkah 2: Menjalankan Frontend (React + Vite)
