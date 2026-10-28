@@ -110,14 +110,18 @@ def list_members():
     page = max(request.args.get("page", 1, type=int), 1)
     per_page = min(max(request.args.get("per_page", 50, type=int), 1), current_app.config["MAX_PAGE_SIZE"])
 
-    q = _filtered_query(claims).options(
-        *[defer(getattr(Member, c)) for c in HEAVY_COLS], selectinload(Member.positions)
-    )
+    include_photos = claims.get("role") == "ANGGOTA" or request.args.get("include_photos") == "true"
+    if include_photos:
+        q = _filtered_query(claims).options(selectinload(Member.positions))
+    else:
+        q = _filtered_query(claims).options(
+            *[defer(getattr(Member, c)) for c in HEAVY_COLS], selectinload(Member.positions)
+        )
     total = q.order_by(None).count()
     rows = q.order_by(Member.nama_lengkap, Member.nik).offset((page - 1) * per_page).limit(per_page).all()
 
     return jsonify(
-        items=[member_to_dict(m, include_photos=False) for m in rows],
+        items=[member_to_dict(m, include_photos=include_photos) for m in rows],
         page=page,
         perPage=per_page,
         total=total,
