@@ -8,3 +8,5 @@ uploads/profile/*
 !uploads/profile/.gitkeep
 uploads/ktp/*
 !uploads/ktp/.gitkeep
+logs/*
+!logs/.gitkeep
