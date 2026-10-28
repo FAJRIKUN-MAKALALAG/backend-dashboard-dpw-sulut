@@ -247,21 +247,45 @@ def update_member(nik):
     values = intercept_and_store_member_photos(values, nik)
 
     _apply_referral_and_leader(values)
+    is_pengurus_val = values.get("is_pengurus")
     pos = position_values_from_row({**values, "nik": m.nik})
-    has_positions = bool(pos) or bool(m.positions)
+
+    # Update seluruh field umum
     for k, v in values.items():
-        # Ringkasan jabatan dikelola otomatis dari tabel positions
-        if k in SUMMARY_COLS and has_positions:
-            continue
-        setattr(m, k, v)
-    if pos:
-        db.session.merge(Position(**pos))
+        if k not in SUMMARY_COLS:
+            if hasattr(m, k):
+                setattr(m, k, v)
+
+    # Kelola perubahan jabatan struktural (tabel positions)
+    if is_pengurus_val is False:
+        # Jika diubah menjadi Anggota Biasa (non-pengurus), bersihkan seluruh jabatan struktural
+        Position.query.filter(Position.member_nik == m.nik).delete(synchronize_session=False)
+        m.positions = []
+        m.is_pengurus = False
+        m.tingkat_kepengurusan = "Bukan Pengurus"
+        m.wilayah_penugasan = None
+        m.jabatan = values.get("jabatan") or "Anggota Biasa"
+        m.nomor_sk = None
+        m.tanggal_sk = None
+        m.urutan = None
+    elif pos:
+        # Jika data pengurus diisi, perbarui posisi struktural utama
+        Position.query.filter(Position.member_nik == m.nik).delete(synchronize_session=False)
+        db.session.add(Position(**pos))
         db.session.flush()
         db.session.expire(m, ["positions"])
-    if m.positions:
         refresh_member_summary(m)
-    m.diubah_oleh = claims.get("adminName")
-    _audit(m.nik, m.nama_lengkap, "UPDATE", "Perubahan data anggota", claims.get("adminName"), m.dpd)
+    else:
+        # Jika tidak ada posisi baru tetapi mempertahankan pengurus/anggota
+        if m.positions:
+            refresh_member_summary(m)
+        else:
+            for k in SUMMARY_COLS:
+                if k in values and hasattr(m, k):
+                    setattr(m, k, values[k])
+
+    m.diubah_oleh = claims.get("adminName") or "Administrator"
+    _audit(m.nik, m.nama_lengkap, "UPDATE", "Perubahan data anggota via manajemen kader", m.diubah_oleh, m.dpd)
     db.session.commit()
     return jsonify(member_to_dict(m))
 
@@ -327,7 +351,10 @@ def update_my_profile():
 @login_required
 def change_status(nik):
     claims = current_claims()
-    m = db.session.get(Member, nik)
+    clean_nik = str(nik).strip()
+    m = db.session.get(Member, clean_nik)
+    if not m:
+        m = Member.query.filter(Member.nik == clean_nik).first()
     if not m or not member_in_scope(claims, m):
         return jsonify(error="Anggota tidak ditemukan"), 404
     data = request.get_json(silent=True) or {}
@@ -340,24 +367,38 @@ def change_status(nik):
     prev = m.status
     m.status = new_status
     m.catatan_mutasi = reason
-    m.diubah_oleh = claims.get("adminName")
-    _audit(m.nik, m.nama_lengkap, "STATUS_CHANGE", reason, claims.get("adminName"), m.dpd, prev, new_status)
+    m.diubah_oleh = claims.get("adminName") or "Administrator"
+    _audit(m.nik, m.nama_lengkap, "STATUS_CHANGE", reason, m.diubah_oleh, m.dpd, prev, new_status)
     db.session.commit()
     return jsonify(member_to_dict(m))
 
 
 @bp.delete("/members/<nik>")
-@super_admin_required
+@login_required
 def delete_member(nik):
-    """Hapus orang beserta seluruh jabatannya: hanya Super Admin. Admin daerah memakai /deletion-requests."""
+    """Hapus orang beserta seluruh jabatannya: Super Admin & Admin DPW memiliki hak penuh langsung."""
     claims = current_claims()
-    m = db.session.get(Member, nik)
+    role = claims.get("role")
+    if role not in ("SUPER_ADMIN", "ADMIN_DPW"):
+        return jsonify(
+            error="Hanya Super Admin dan Admin DPW yang memiliki wewenang untuk menghapus kader secara langsung. Pengurus DPD/DPC/DPRt silakan gunakan fitur Pengajuan Penghapusan."
+        ), 403
+
+    clean_nik = str(nik).strip()
+    m = db.session.get(Member, clean_nik)
+    if not m:
+        m = Member.query.filter(Member.nik == clean_nik).first()
     if not m:
         return jsonify(error="Anggota tidak ditemukan"), 404
-    _audit(m.nik, m.nama_lengkap, "DELETE", "Dihapus langsung oleh Super Admin", claims.get("adminName"), m.dpd)
+
+    # Hapus juga positions jika ada
+    Position.query.filter(Position.member_nik == m.nik).delete(synchronize_session=False)
+
+    actor_name = claims.get("adminName") or role
+    _audit(m.nik, m.nama_lengkap, "DELETE", f"Dihapus langsung oleh {actor_name}", actor_name, m.dpd)
     db.session.delete(m)
     db.session.commit()
-    return jsonify(deleted=nik)
+    return jsonify(deleted=clean_nik)
 
 
 def _chunks(seq, size):

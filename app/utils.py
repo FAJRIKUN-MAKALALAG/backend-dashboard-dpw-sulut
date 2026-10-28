@@ -251,7 +251,25 @@ def row_to_dict(obj, fields: dict) -> dict:
 
 # ---------------- Scoping RBAC ----------------
 def is_global(claims: dict) -> bool:
-    return claims.get("role") in ("SUPER_ADMIN", "ADMIN_DPW") and claims.get("dpdAccess", "ALL") == "ALL"
+    """Super Admin dan Admin DPW selalu memiliki akses global penuh ke seluruh wilayah Sulawesi Utara."""
+    role = claims.get("role")
+    if role in ("SUPER_ADMIN", "ADMIN_DPW"):
+        return True
+    return claims.get("dpdAccess") == "ALL"
+
+
+def clean_region_name(name: str) -> str:
+    """Membersihkan imbuhan administratif seperti Kabupaten, Kota, Kec., Desa untuk pencocokan yang akurat."""
+    if not name:
+        return ""
+    import re
+    n = re.sub(
+        r"^(kabupaten|kab\.|kota|kecamatan|kec\.|desa|kelurahan|kel\.)\s+",
+        "",
+        str(name).strip(),
+        flags=re.IGNORECASE,
+    )
+    return n.strip().upper()
 
 
 def apply_scope(query, claims: dict, model=Member):
@@ -298,18 +316,21 @@ def in_scope(claims: dict, dpd=None, dpc=None, dprt=None) -> bool:
         return False
 
     dpd_want = claims.get("dpdAccess")
-    if dpd_want and dpd_want != "ALL" and dpd != dpd_want:
-        return False
+    if dpd_want and dpd_want != "ALL":
+        if clean_region_name(dpd) != clean_region_name(dpd_want):
+            return False
 
     if role in ("ADMIN_DPC", "ADMIN_DPRT"):
         dpc_want = claims.get("dpcAccess")
-        if dpc_want and dpc_want not in ("ALL", "Umum (DPD)", "-", "") and dpc != dpc_want:
-            return False
+        if dpc_want and dpc_want not in ("ALL", "Umum (DPD)", "-", ""):
+            if clean_region_name(dpc) != clean_region_name(dpc_want):
+                return False
 
     if role == "ADMIN_DPRT":
         dprt_want = claims.get("dprtAccess")
-        if dprt_want and dprt_want not in ("ALL", "Pusat/Umum", "-", "") and dprt != dprt_want:
-            return False
+        if dprt_want and dprt_want not in ("ALL", "Pusat/Umum", "-", ""):
+            if clean_region_name(dprt) != clean_region_name(dprt_want):
+                return False
 
     return True
 
