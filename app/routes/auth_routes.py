@@ -10,9 +10,23 @@ from ..models import AppUser, Member
 bp = Blueprint("auth", __name__)
 
 
-def determine_role(tingkat: str) -> str:
-    """Memetakan tingkat kepengurusan organisasi ke level hak akses (Role) sistem."""
+def determine_role(member_or_tingkat, member: Member = None) -> str:
+    """Memetakan status kepengurusan ke level hak akses (Role) sistem.
+    Hanya pengurus struktural ber-SK yang mendapatkan role Admin (DPW, DPD, DPC, DPRt).
+    Anggota biasa yang belum/tidak memiliki SK resmi mendapatkan role 'ANGGOTA'."""
+    m = member_or_tingkat if isinstance(member_or_tingkat, Member) else member
+    tingkat = member_or_tingkat.tingkat_kepengurusan if isinstance(member_or_tingkat, Member) else member_or_tingkat
+
     t = (tingkat or "").strip().upper()
+    has_sk = False
+    if m:
+        has_sk = bool(m.is_pengurus or (m.nomor_sk and str(m.nomor_sk).strip()))
+    else:
+        has_sk = t in ("DPW", "DPD", "DPC", "DPRT", "RANTING")
+
+    if not has_sk or t in ("BUKAN PENGURUS", "ANGGOTA", "KADER", "-", ""):
+        return "ANGGOTA"
+
     if t == "DPW":
         return "ADMIN_DPW"
     elif t == "DPD":
@@ -21,7 +35,7 @@ def determine_role(tingkat: str) -> str:
         return "ADMIN_DPC"
     elif t in ("DPRT", "RANTING"):
         return "ADMIN_DPRT"
-    return "ADMIN_DPRT"
+    return "ANGGOTA"
 
 
 def claims_for(u: AppUser) -> dict:
@@ -41,6 +55,11 @@ def claims_for(u: AppUser) -> dict:
         dpc_acc = "ALL"
         dprt_acc = "ALL"
 
+    # Hanya Super Admin dan Pengurus struktural ber-SK yang berwenang menambahkan anggota baru
+    is_structural_leader = bool(
+        u.role in ("SUPER_ADMIN", "ADMIN_DPW", "ADMIN_DPD", "ADMIN_DPC", "ADMIN_DPRT") and u.role != "ANGGOTA"
+    )
+
     return {
         "role": u.role,
         "dpdAccess": dpd_acc,
@@ -48,7 +67,9 @@ def claims_for(u: AppUser) -> dict:
         "dprtAccess": dprt_acc,
         "adminName": u.full_name,
         "adminNik": u.member_nik or u.username,
-        "jabatan": u.jabatan or f"Admin {u.role}",
+        "jabatan": u.jabatan or ("Anggota Biasa" if u.role == "ANGGOTA" else f"Admin {u.role}"),
+        "canAddMembers": is_structural_leader,
+        "hasSk": is_structural_leader,
     }
 
 
@@ -135,8 +156,8 @@ def login():
             error=f"Kata sandi salah. Pengurus {member.nama_lengkap} dapat menggunakan kata sandi awal (6 digit terakhir NIK: {hint} atau 'nasdem123'), atau klik tombol 'Aktivasi Akun' di bawah."
         ), 401
 
-    # Otomatis buatkan akun AppUser untuk pengurus ini!
-    user_role = determine_role(member.tingkat_kepengurusan)
+    # Otomatis buatkan akun AppUser untuk pengurus atau anggota ini!
+    user_role = determine_role(member)
     new_user = AppUser(
         member_nik=member.nik,
         nomor_ekta=member.nomor_ekta,
@@ -224,7 +245,7 @@ def activate_pengurus():
         (AppUser.member_nik == member.nik) | (func.lower(AppUser.username) == member.nik.lower())
     ).first()
 
-    user_role = determine_role(member.tingkat_kepengurusan)
+    user_role = determine_role(member)
 
     if user:
         user.password_hash = generate_password_hash(new_password)

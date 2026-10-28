@@ -4,3 +4,7 @@ venv/
 __pycache__/
 *.pyc
 instance/
+uploads/profile/*
+!uploads/profile/.gitkeep
+uploads/ktp/*
+!uploads/ktp/.gitkeep

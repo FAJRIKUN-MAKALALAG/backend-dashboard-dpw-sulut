@@ -7,6 +7,7 @@ from ..auth import current_claims, login_required, super_admin_required
 from ..extensions import db
 from ..models import AuditLog, Member, Position
 from ..services.referral_service import find_direct_leader
+from ..services.image_storage import intercept_and_store_member_photos
 from ..utils import (
     HEAVY_COLS,
     POSITION_COLS,
@@ -161,6 +162,10 @@ def check_tingkat_permission(role: str, tingkat: str) -> bool:
 @login_required
 def create_member():
     claims = current_claims()
+    # Pembatasan: Anggota biasa tidak berwenang menambah anggota baru. Hanya pengurus resmi ber-SK.
+    if claims.get("role") == "ANGGOTA" or not claims.get("canAddMembers", True):
+        return jsonify(error="Hanya pengurus resmi pemegang SK yang berwenang menambahkan anggota baru."), 403
+
     values = payload_to_member_values(request.get_json(silent=True) or {})
     nik = values.get("nik")
     if not nik or not nik.isdigit() or len(nik) != 16:
@@ -179,6 +184,9 @@ def create_member():
 
     if db.session.get(Member, nik):
         return jsonify(error="NIK sudah terdaftar"), 409
+
+    # Otomatis simpan foto Base64 ke berkas fisik WebP di disk server
+    values = intercept_and_store_member_photos(values, nik)
 
     _apply_referral_and_leader(values)
     values["diubah_oleh"] = claims.get("adminName")
@@ -213,6 +221,9 @@ def update_member(nik):
     if "status" in values and values["status"] not in STATUS_VALUES:
         return jsonify(error="Status tidak valid"), 400
 
+    # Simpan berkas foto fisik WebP jika ada update foto
+    values = intercept_and_store_member_photos(values, nik)
+
     _apply_referral_and_leader(values)
     pos = position_values_from_row({**values, "nik": m.nik})
     has_positions = bool(pos) or bool(m.positions)
@@ -231,6 +242,63 @@ def update_member(nik):
     _audit(m.nik, m.nama_lengkap, "UPDATE", "Perubahan data anggota", claims.get("adminName"), m.dpd)
     db.session.commit()
     return jsonify(member_to_dict(m))
+
+
+@bp.get("/members/me/profile")
+@login_required
+def get_my_profile():
+    """Mengambil profil lengkap akun yang sedang login untuk portal mandiri."""
+    claims = current_claims()
+    my_nik = claims.get("adminNik")
+    if not my_nik:
+        return jsonify(error="Sesi akun tidak memiliki identitas NIK anggota"), 400
+
+    m = db.session.get(Member, my_nik)
+    if not m:
+        m = Member.query.filter(Member.nik == my_nik).first()
+    if not m:
+        return jsonify(error="Data profil Anda tidak ditemukan di database"), 404
+
+    return jsonify(member=member_to_dict(m, include_photos=True))
+
+
+@bp.put("/members/me/profile")
+@login_required
+def update_my_profile():
+    """Memperbolehkan setiap kader/pengurus mengedit biodata kontak & foto profil/KTP mereka sendiri."""
+    claims = current_claims()
+    my_nik = claims.get("adminNik")
+    if not my_nik:
+        return jsonify(error="Sesi akun tidak memiliki identitas NIK anggota"), 400
+
+    m = db.session.get(Member, my_nik)
+    if not m:
+        m = Member.query.filter(Member.nik == my_nik).first()
+    if not m:
+        return jsonify(error="Data profil Anda tidak ditemukan di database"), 404
+
+    data = request.get_json(silent=True) or {}
+    values = payload_to_member_values(data)
+
+    # Hanya field kontak, biodata pribadi, dan foto yang diizinkan diubah mandiri oleh pemilik akun:
+    allowed_cols = {
+        "nomor_hp", "email", "sosmed", "alamat_lengkap", "agama",
+        "pekerjaan", "tempat_lahir", "tanggal_lahir", "jenis_kelamin",
+        "foto_profil_url", "foto_ktp_url"
+    }
+    filtered_values = {k: v for k, v in values.items() if k in allowed_cols}
+
+    # Intercept Base64 photos -> simpan ke disk WebP
+    filtered_values = intercept_and_store_member_photos(filtered_values, m.nik)
+
+    for k, v in filtered_values.items():
+        if hasattr(m, k):
+            setattr(m, k, v)
+
+    m.diubah_oleh = claims.get("adminName") or m.nama_lengkap
+    _audit(m.nik, m.nama_lengkap, "SELF_UPDATE", "Pembaruan profil mandiri oleh kader", m.nama_lengkap, m.dpd)
+    db.session.commit()
+    return jsonify(member=member_to_dict(m, include_photos=True), message="Profil Anda berhasil diperbarui")
 
 
 @bp.post("/members/<nik>/status")
