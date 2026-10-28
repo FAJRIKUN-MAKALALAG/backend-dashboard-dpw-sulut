@@ -204,12 +204,30 @@ def create_member():
 @login_required
 def update_member(nik):
     claims = current_claims()
-    m = db.session.get(Member, nik)
+    clean_nik = str(nik).strip()
+    m = db.session.get(Member, clean_nik)
+    if not m:
+        m = Member.query.filter(Member.nik == clean_nik).first()
     if not m or not member_in_scope(claims, m):
         return jsonify(error="Anggota tidak ditemukan"), 404
 
-    values = payload_to_member_values(request.get_json(silent=True) or {})
+    data = request.get_json(silent=True) or {}
+    new_nik = data.get("nik")
+    values = payload_to_member_values(data)
     values.pop("nik", None)
+
+    # Dukungan koreksi NIK jika admin mengubah NIK pada formulir edit
+    if new_nik and str(new_nik).strip() != clean_nik:
+        clean_new_nik = str(new_nik).strip()
+        if clean_new_nik.isdigit() and len(clean_new_nik) == 16:
+            existing = db.session.get(Member, clean_new_nik)
+            if existing and existing.nik != clean_nik:
+                return jsonify(error="NIK baru sudah terdaftar pada anggota lain"), 409
+            m.nik = clean_new_nik
+            for pos_item in m.positions:
+                pos_item.member_nik = clean_new_nik
+            db.session.flush()
+
     if not in_scope(claims, values.get("dpd", m.dpd), values.get("dpc", m.dpc), values.get("dprt", m.dprt)):
         if not member_in_scope(claims, m):
             return jsonify(error="Wilayah tujuan di luar cakupan akses akun Anda"), 403
