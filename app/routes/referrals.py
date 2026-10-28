@@ -60,6 +60,23 @@ def get_my_referral_code():
     claims = current_claims()
     m = get_current_member(claims)
 
+    # Anggota biasa tanpa SK tidak memiliki kode referral & tidak memiliki rekrutmen
+    if claims.get("role") == "ANGGOTA":
+        return jsonify({
+            "isMemberLinked": bool(m),
+            "kodeReferral": None,
+            "namaLengkap": m.nama_lengkap if m else claims.get("adminName"),
+            "nik": m.nik if m else claims.get("adminNik"),
+            "nomorEkta": m.nomor_ekta if m else None,
+            "jabatan": m.jabatan if m else "Kader / Anggota Biasa",
+            "tingkatKepengurusan": "Bukan Pengurus",
+            "dpd": m.dpd if m else claims.get("dpdAccess"),
+            "dpc": m.dpc if m else "-",
+            "dprt": m.dprt if m else "-",
+            "ketuaLangsung": None,
+            "totalRecruits": 0,
+        })
+
     if not m:
         # Fallback untuk akun Super Admin/Admin sistem yang belum ditautkan ke data anggota fisik
         role = claims.get("role", "ADMIN")
@@ -219,6 +236,21 @@ def referral_tracking():
     - Dilengkapi Leaderboard perekrut teraktif.
     """
     claims = current_claims()
+
+    # Anggota biasa tidak memiliki akses ke tracking rekrutmen atau referral siapapun
+    if claims.get("role") == "ANGGOTA":
+        return jsonify({
+            "myStats": {
+                "kodeReferral": None,
+                "totalDirect": 0,
+                "totalTeam": 0,
+                "isLeader": False,
+            },
+            "myRecruits": [],
+            "teamRecruits": [],
+            "leaderboard": [],
+        })
+
     m = get_current_member(claims)
 
     user_nik = m.nik if m else claims.get("adminNik")

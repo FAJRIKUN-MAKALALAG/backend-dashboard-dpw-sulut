@@ -259,6 +259,15 @@ def apply_scope(query, claims: dict, model=Member):
         return query
     role = claims.get("role")
 
+    # Anggota biasa tanpa SK HANYA memiliki akses ke data pribadinya sendiri
+    if role == "ANGGOTA":
+        my_nik = str(claims.get("adminNik") or "")
+        if hasattr(model, "nik"):
+            return query.filter(getattr(model, "nik") == my_nik)
+        elif hasattr(model, "member_nik"):
+            return query.filter(getattr(model, "member_nik") == my_nik)
+        return query.filter(False)
+
     # 1. DPD filter: berlaku untuk ADMIN_DPD, ADMIN_DPC, ADMIN_DPRT
     dpd_val = claims.get("dpdAccess")
     if dpd_val and dpd_val != "ALL" and hasattr(model, "dpd"):
@@ -285,6 +294,8 @@ def in_scope(claims: dict, dpd=None, dpc=None, dprt=None) -> bool:
     if is_global(claims):
         return True
     role = claims.get("role")
+    if role == "ANGGOTA":
+        return False
 
     dpd_want = claims.get("dpdAccess")
     if dpd_want and dpd_want != "ALL" and dpd != dpd_want:
@@ -308,12 +319,17 @@ def member_scope_query(claims: dict):
     q = Member.query
     if is_global(claims):
         return q
+    if claims.get("role") == "ANGGOTA":
+        my_nik = str(claims.get("adminNik") or "")
+        return q.filter(Member.nik == my_nik)
     in_positions = apply_scope(select(Position.member_nik), claims, Position)
     in_domicile = apply_scope(select(Member.nik), claims, Member)
     return q.filter(or_(Member.nik.in_(in_positions), Member.nik.in_(in_domicile)))
 
 
 def member_in_scope(claims: dict, m: Member) -> bool:
+    if claims.get("role") == "ANGGOTA":
+        return str(m.nik) == str(claims.get("adminNik") or "")
     if in_scope(claims, m.dpd, m.dpc, m.dprt):
         return True
     return any(in_scope(claims, p.dpd, p.dpc, p.dprt) for p in m.positions)

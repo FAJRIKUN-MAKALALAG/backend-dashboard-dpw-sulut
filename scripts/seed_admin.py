@@ -14,7 +14,7 @@ app = create_app()
 
 with app.app_context():
     db.create_all()
-    username = os.getenv("SEED_ADMIN_USERNAME", "7106033003050001")
+    username = os.getenv("SEED_ADMIN_USERNAME", "SUPER_ADMIN")
     password = os.getenv("SEED_ADMIN_PASSWORD")
     if not password:
         raise SystemExit("Set SEED_ADMIN_PASSWORD di .env terlebih dahulu.")
