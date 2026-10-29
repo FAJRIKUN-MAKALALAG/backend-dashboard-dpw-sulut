@@ -5,7 +5,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 from ..auth import current_claims, login_required
 from ..extensions import db
-from ..models import AppUser, Member
+from ..models import AppUser, Member, Position
 
 bp = Blueprint("auth", __name__)
 
@@ -43,12 +43,57 @@ def claims_for(u: AppUser) -> dict:
     dpc_acc = u.dpc_access or "ALL"
     dprt_acc = u.dprt_access or "ALL"
 
+    # Peran DPC: dpc_access WAJIB spesifik ke kecamatannya, tidak boleh ALL
+    if u.role == "ADMIN_DPC":
+        dprt_acc = "ALL"  # Membawahi seluruh DPRt di kecamatannya
+        if not dpc_acc or dpc_acc in ("ALL", "Umum (DPD)", "-", ""):
+            pos_dpc = Position.query.filter(
+                Position.member_nik == u.member_nik,
+                Position.tingkat_kepengurusan == "DPC"
+            ).first() if u.member_nik else None
+            if pos_dpc and pos_dpc.dpc and pos_dpc.dpc not in ("ALL", "Umum (DPD)", "-", ""):
+                dpc_acc = pos_dpc.dpc
+                u.dpc_access = pos_dpc.dpc
+                if pos_dpc.jabatan:
+                    u.jabatan = pos_dpc.jabatan
+                try:
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+            else:
+                m = Member.query.filter(Member.nik == u.member_nik).first() if u.member_nik else None
+                if m and m.dpc and m.dpc not in ("ALL", "Umum (DPD)", "-", ""):
+                    dpc_acc = m.dpc
+                    u.dpc_access = m.dpc
+                    try:
+                        db.session.commit()
+                    except Exception:
+                        db.session.rollback()
+
+    # Peran DPRt: dpc_access dan dprt_access WAJIB spesifik
+    elif u.role == "ADMIN_DPRT":
+        if not dprt_acc or dprt_acc in ("ALL", "Pusat/Umum", "-", "") or not dpc_acc or dpc_acc in ("ALL", "Umum (DPD)", "-", ""):
+            pos_dprt = Position.query.filter(
+                Position.member_nik == u.member_nik,
+                Position.tingkat_kepengurusan == "DPRt"
+            ).first() if u.member_nik else None
+            if pos_dprt:
+                if pos_dprt.dpc and pos_dprt.dpc not in ("ALL", "Umum (DPD)", "-", ""):
+                    dpc_acc = pos_dprt.dpc
+                    u.dpc_access = pos_dprt.dpc
+                if pos_dprt.dprt and pos_dprt.dprt not in ("ALL", "Pusat/Umum", "-", ""):
+                    dprt_acc = pos_dprt.dprt
+                    u.dprt_access = pos_dprt.dprt
+                if pos_dprt.jabatan:
+                    u.jabatan = pos_dprt.jabatan
+                try:
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+
     # Peran DPD membawahi SELURUH DPC dan DPRt di DPD-nya
-    if u.role == "ADMIN_DPD":
+    elif u.role == "ADMIN_DPD":
         dpc_acc = "ALL"
-        dprt_acc = "ALL"
-    # Peran DPC membawahi SELURUH DPRt di DPC-nya
-    elif u.role == "ADMIN_DPC":
         dprt_acc = "ALL"
     elif u.role in ("SUPER_ADMIN", "ADMIN_DPW"):
         dpd_acc = "ALL"
@@ -123,7 +168,7 @@ def login():
 
         if not pwd_match:
             return jsonify(
-                error="Kata sandi salah. Silakan coba 6 digit terakhir NIK atau 'nasdem123', atau klik 'Aktivasi Akun Pengurus'."
+                error="Kata sandi salah. Silakan periksa kembali kata sandi Anda atau gunakan menu 'Aktivasi Pengurus'."
             ), 401
 
         claims = claims_for(user)
@@ -151,13 +196,40 @@ def login():
     )
 
     if not is_default_match:
-        hint = nik_str[-6:] if len(nik_str) >= 6 else "nasdem123"
         return jsonify(
-            error=f"Kata sandi salah. Pengurus {member.nama_lengkap} dapat menggunakan kata sandi awal (6 digit terakhir NIK: {hint} atau 'nasdem123'), atau klik tombol 'Aktivasi Akun' di bawah."
+            error="Kata sandi salah. Silakan periksa kembali kata sandi Anda atau gunakan menu 'Aktivasi Pengurus'."
         ), 401
+
+def resolve_territory_access(member: Member, user_role: str):
+    dpd = member.dpd or "ALL"
+    dpc = member.dpc or "ALL"
+    dprt = member.dprt or "ALL"
+    jabatan = member.jabatan or f"Pengurus {member.tingkat_kepengurusan}"
+
+    if user_role == "ADMIN_DPC":
+        pos_dpc = next((p for p in member.positions if p.tingkat_kepengurusan == "DPC" and p.dpc and p.dpc not in ("ALL", "Umum (DPD)", "-", "")), None)
+        if pos_dpc:
+            dpc = pos_dpc.dpc
+            if pos_dpc.jabatan:
+                jabatan = pos_dpc.jabatan
+        elif dpc in ("Umum (DPD)", "-", ""):
+            dpc = "ALL"
+    elif user_role == "ADMIN_DPRT":
+        pos_dprt = next((p for p in member.positions if p.tingkat_kepengurusan == "DPRt" and p.dprt and p.dprt not in ("ALL", "Pusat/Umum", "-", "")), None)
+        if pos_dprt:
+            if pos_dprt.dpc and pos_dprt.dpc not in ("ALL", "Umum (DPD)", "-", ""):
+                dpc = pos_dprt.dpc
+            if pos_dprt.dprt and pos_dprt.dprt not in ("ALL", "Pusat/Umum", "-", ""):
+                dprt = pos_dprt.dprt
+            if pos_dprt.jabatan:
+                jabatan = pos_dprt.jabatan
+
+    return dpd, dpc, dprt, jabatan
+
 
     # Otomatis buatkan akun AppUser untuk pengurus atau anggota ini!
     user_role = determine_role(member)
+    dpd_val, dpc_val, dprt_val, jab_val = resolve_territory_access(member, user_role)
     new_user = AppUser(
         member_nik=member.nik,
         nomor_ekta=member.nomor_ekta,
@@ -165,10 +237,10 @@ def login():
         password_hash=generate_password_hash(password),
         full_name=member.nama_lengkap,
         role=user_role,
-        dpd_access=member.dpd or "ALL",
-        dpc_access=member.dpc or "ALL",
-        dprt_access=member.dprt or "ALL",
-        jabatan=member.jabatan or f"Pengurus {member.tingkat_kepengurusan}",
+        dpd_access=dpd_val,
+        dpc_access=dpc_val,
+        dprt_access=dprt_val,
+        jabatan=jab_val,
         is_active=True,
     )
     db.session.add(new_user)
@@ -215,7 +287,7 @@ def check_pengurus():
         "dpc": member.dpc,
         "dprt": member.dprt,
         "hasCustomPassword": user is not None and bool(user.password_hash),
-        "defaultPasswordHint": member.nik[-6:] if len(member.nik) >= 6 else "nasdem123",
+        "defaultPasswordHint": "",
     })
 
 
@@ -246,15 +318,16 @@ def activate_pengurus():
     ).first()
 
     user_role = determine_role(member)
+    dpd_val, dpc_val, dprt_val, jab_val = resolve_territory_access(member, user_role)
 
     if user:
         user.password_hash = generate_password_hash(new_password)
         user.full_name = member.nama_lengkap
         user.role = user_role
-        user.dpd_access = member.dpd or "ALL"
-        user.dpc_access = member.dpc or "ALL"
-        user.dprt_access = member.dprt or "ALL"
-        user.jabatan = member.jabatan or f"Pengurus {member.tingkat_kepengurusan}"
+        user.dpd_access = dpd_val
+        user.dpc_access = dpc_val
+        user.dprt_access = dprt_val
+        user.jabatan = jab_val
         user.is_active = True
     else:
         user = AppUser(
@@ -264,10 +337,10 @@ def activate_pengurus():
             password_hash=generate_password_hash(new_password),
             full_name=member.nama_lengkap,
             role=user_role,
-            dpd_access=member.dpd or "ALL",
-            dpc_access=member.dpc or "ALL",
-            dprt_access=member.dprt or "ALL",
-            jabatan=member.jabatan or f"Pengurus {member.tingkat_kepengurusan}",
+            dpd_access=dpd_val,
+            dpc_access=dpc_val,
+            dprt_access=dprt_val,
+            jabatan=jab_val,
             is_active=True,
         )
         db.session.add(user)

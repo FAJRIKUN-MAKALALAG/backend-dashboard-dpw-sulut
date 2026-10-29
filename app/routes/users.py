@@ -43,8 +43,16 @@ def create_user():
     data = request.get_json(silent=True) or {}
     if not data.get("username") or not data.get("password") or not data.get("fullName"):
         return jsonify(error="username, password, dan fullName wajib diisi"), 400
-    if data.get("role", "ADMIN_DPD") not in ROLES:
+    role = data.get("role", "ADMIN_DPD")
+    if role not in ROLES:
         return jsonify(error="Role tidak valid"), 400
+    if role == "ADMIN_DPC" and (not data.get("dpcAccess") or data.get("dpcAccess") == "ALL"):
+        return jsonify(error="Akun Admin DPC wajib memilih wilayah Kecamatan (DPC) spesifik."), 400
+    if role == "ADMIN_DPRT":
+        if not data.get("dpcAccess") or data.get("dpcAccess") == "ALL":
+            return jsonify(error="Akun Admin DPRt wajib memilih wilayah Kecamatan (DPC)."), 400
+        if not data.get("dprtAccess") or data.get("dprtAccess") == "ALL":
+            return jsonify(error="Akun Admin DPRt wajib memilih wilayah Desa/Kelurahan (DPRt) spesifik."), 400
     if AppUser.query.filter_by(username=data["username"].strip()).first():
         return jsonify(error="Username sudah dipakai"), 409
     u = AppUser(username=data["username"].strip(), full_name=data["fullName"], password_hash="")
@@ -61,8 +69,16 @@ def update_user(uid):
     if not u:
         return jsonify(error="Akun tidak ditemukan"), 404
     data = request.get_json(silent=True) or {}
-    if "role" in data and data["role"] not in ROLES:
+    role = data.get("role", u.role)
+    if "role" in data and role not in ROLES:
         return jsonify(error="Role tidak valid"), 400
+    if role == "ADMIN_DPC" and ("dpcAccess" in data and (not data.get("dpcAccess") or data.get("dpcAccess") == "ALL")):
+        return jsonify(error="Akun Admin DPC wajib memilih wilayah Kecamatan (DPC) spesifik."), 400
+    if role == "ADMIN_DPRT":
+        if "dpcAccess" in data and (not data.get("dpcAccess") or data.get("dpcAccess") == "ALL"):
+            return jsonify(error="Akun Admin DPRt wajib memilih wilayah Kecamatan (DPC)."), 400
+        if "dprtAccess" in data and (not data.get("dprtAccess") or data.get("dprtAccess") == "ALL"):
+            return jsonify(error="Akun Admin DPRt wajib memilih wilayah Desa/Kelurahan (DPRt) spesifik."), 400
     _apply(u, data)
     db.session.commit()
     return jsonify(row_to_dict(u, USER_FIELDS))

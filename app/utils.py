@@ -264,12 +264,33 @@ def clean_region_name(name: str) -> str:
         return ""
     import re
     n = re.sub(
-        r"^(kabupaten|kab\.|kota|kecamatan|kec\.|desa|kelurahan|kel\.)\s+",
+        r"^(kabupaten|kab\.|kab|kota|kotamadya|kecamatan|kec\.|kec|desa|kelurahan|kel\.|des)\s+",
         "",
         str(name).strip(),
         flags=re.IGNORECASE,
-    )
-    return n.strip().upper()
+    ).strip().lower()
+
+    aliases = {
+        "bolmong": "bolaang mongondow",
+        "bm": "bolaang mongondow",
+        "bolmut": "bolaang mongondow utara",
+        "bolsel": "bolaang mongondow selatan",
+        "boltim": "bolaang mongondow timur",
+        "minsel": "minahasa selatan",
+        "minut": "minahasa utara",
+        "mitra": "minahasa tenggara",
+        "sitaro": "kepulauan siau tagulandang biaro",
+        "sangihe": "kepulauan sangihe",
+        "talaud": "kepulauan talaud",
+    }
+    if n in aliases:
+        n = aliases[n]
+    elif "tagulandang" in n or "sitaro" in n:
+        n = "kepulauan siau tagulandang biaro"
+
+    n = re.sub(r"[^a-z0-9]", " ", n)
+    return " ".join(n.split()).upper()
+
 
 
 def apply_scope(query, claims: dict, model=Member):

@@ -1,6 +1,7 @@
 from flask import Blueprint, jsonify, request
 
 from ..auth import current_claims, login_required
+from ..extensions import db
 from ..models import AuditLog
 from ..utils import apply_scope, row_to_dict
 
@@ -27,3 +28,18 @@ def list_audit():
     total = q.count()
     rows = q.order_by(AuditLog.timestamp.desc()).offset((page - 1) * per_page).limit(per_page).all()
     return jsonify(items=[row_to_dict(r, AUDIT_FIELDS) for r in rows], page=page, perPage=per_page, total=total)
+
+
+@bp.delete("/audit-logs")
+@login_required
+def clear_audit():
+    claims = current_claims()
+    if claims.get("role") != "SUPER_ADMIN":
+        return jsonify(error="Hanya Super Administrator yang berwenang menghapus seluruh riwayat audit."), 403
+
+    deleted_count = db.session.query(AuditLog).delete()
+    db.session.commit()
+    return jsonify(
+        message=f"Berhasil membersihkan seluruh riwayat audit ({deleted_count} log dihapus).",
+        count=deleted_count
+    )
