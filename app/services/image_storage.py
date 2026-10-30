@@ -7,11 +7,14 @@ menyimpan URL link teks pendek di kolom database.
 import base64
 import hashlib
 import io
+import logging
 import os
 import re
 import time
 from typing import Optional, Tuple
 from PIL import Image
+
+logger = logging.getLogger("nasdem.storage")
 
 # Direktori penyimpanan lokal di server
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -124,8 +127,16 @@ def optimize_and_save_image(
     # 5. Simpan sebagai WebP terkompresi
     img.save(file_path, "WEBP", quality=quality, method=6)
 
-    # 6. Kembalikan URL publik API
-    return f"/api/uploads/{cat_name}/{filename}"
+    # 6. Hitung ukuran dan catat log sukses
+    file_size_kb = os.path.getsize(file_path) / 1024
+    url = f"/api/uploads/{cat_name}/{filename}"
+    logger.info(
+        f"[STORAGE-SAVED] Berhasil menyimpan berkas fisik Foto {cat_name.upper()} di disk server: "
+        f"{filename} ({w}x{h} px, {file_size_kb:.1f} KB) | Path: {file_path} -> URL: {url} | ID: {clean_id}"
+    )
+
+    # 7. Kembalikan URL publik API
+    return url
 
 
 def intercept_and_store_member_photos(values: dict, default_nik: Optional[str] = None) -> dict:
@@ -140,18 +151,22 @@ def intercept_and_store_member_photos(values: dict, default_nik: Optional[str] =
     foto_profil = values.get("foto_profil_url")
     if foto_profil and isinstance(foto_profil, str) and (is_base64_data_uri(foto_profil) or len(foto_profil) > 600):
         try:
+            logger.info(f"[IMAGE-PROCESS] Mendeteksi data Foto Profil untuk NIK {nik}, memulai kompresi & penyimpanan fisik...")
             url = optimize_and_save_image(foto_profil, category="profile", identifier=nik)
             values["foto_profil_url"] = url
+            logger.info(f"[IMAGE-SUCCESS] Foto Profil untuk NIK {nik} berhasil disimpan di server dan URL siap dicatat di DB: {url}")
         except Exception as e:
-            print(f"Peringatan: Gagal menyimpan berkas foto profil untuk {nik}: {e}")
+            logger.error(f"[IMAGE-ERROR] Gagal memproses berkas Foto Profil untuk NIK {nik}: {e}", exc_info=True)
 
     # Proses foto KTP
     foto_ktp = values.get("foto_ktp_url")
     if foto_ktp and isinstance(foto_ktp, str) and (is_base64_data_uri(foto_ktp) or len(foto_ktp) > 600):
         try:
+            logger.info(f"[IMAGE-PROCESS] Mendeteksi data Foto KTP untuk NIK {nik}, memulai kompresi & penyimpanan fisik...")
             url = optimize_and_save_image(foto_ktp, category="ktp", identifier=nik)
             values["foto_ktp_url"] = url
+            logger.info(f"[IMAGE-SUCCESS] Foto KTP untuk NIK {nik} berhasil disimpan di server dan URL siap dicatat di DB: {url}")
         except Exception as e:
-            print(f"Peringatan: Gagal menyimpan berkas foto KTP untuk {nik}: {e}")
+            logger.error(f"[IMAGE-ERROR] Gagal memproses berkas Foto KTP untuk NIK {nik}: {e}", exc_info=True)
 
     return values
