@@ -22,8 +22,11 @@ def serve_uploaded_file(category: str, filename: str):
         logger.warning(f"[UPLOAD-SERVE-404] Berkas foto {cat} tidak ditemukan: {filename} di {target_dir}")
         return jsonify(error="Berkas tidak ditemukan"), 404
 
-    # Cache browser 7 hari untuk efisiensi loading
-    return send_from_directory(target_dir, filename, max_age=86400 * 7)
+    # Cache browser 7 hari untuk efisiensi loading + header CORP & CORS
+    resp = send_from_directory(target_dir, filename, max_age=86400 * 7)
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Cross-Origin-Resource-Policy"] = "cross-origin"
+    return resp
 
 
 @bp.post("/upload")

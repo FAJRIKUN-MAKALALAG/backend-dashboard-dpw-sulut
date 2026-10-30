@@ -110,7 +110,9 @@ def list_members():
     page = max(request.args.get("page", 1, type=int), 1)
     per_page = min(max(request.args.get("per_page", 50, type=int), 1), current_app.config["MAX_PAGE_SIZE"])
 
-    include_photos = claims.get("role") == "ANGGOTA" or request.args.get("include_photos") == "true"
+    # Berkas foto tersimpan sebagai URL fisik WebP singkat (~58 bytes) pada server disk.
+    # Selalu sertakan foto profil agar tampil di tabel anggota dan portal struktur secara default.
+    include_photos = request.args.get("include_photos", "true").lower() != "false"
     if include_photos:
         q = _filtered_query(claims).options(selectinload(Member.positions))
     else:

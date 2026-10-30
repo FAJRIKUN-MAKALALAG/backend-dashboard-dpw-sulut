@@ -193,9 +193,12 @@ def _iso(v):
 def member_to_dict(m: Member, include_photos=True, include_positions=True) -> dict:
     out = {}
     for col, camel in MEMBER_FIELDS.items():
-        if not include_photos and col in HEAVY_COLS:
-            continue
         v = getattr(m, col)
+        if not include_photos and col in HEAVY_COLS:
+            # Jika berupa URL fisik WebP ringkas (< 500 byte), tetap sertakan
+            if v and isinstance(v, str) and not v.startswith("data:image/") and len(v) < 500:
+                out[camel] = _iso(v)
+            continue
         if v is None and camel not in ("nik", "namaLengkap"):
             continue
         out[camel] = _iso(v)

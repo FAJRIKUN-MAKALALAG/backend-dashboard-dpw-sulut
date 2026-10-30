@@ -2,9 +2,9 @@ from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
 
-from ..auth import current_claims, login_required, super_admin_required
+from ..auth import current_claims, login_required, roles_required
 from ..extensions import db
-from ..models import AuditLog, DeletionRequest, Member
+from ..models import AuditLog, DeletionRequest, Member, Position
 from ..utils import apply_scope, in_scope, row_to_dict
 
 bp = Blueprint("deletions", __name__)
@@ -54,7 +54,7 @@ def create_request():
 
 
 @bp.post("/deletion-requests/<req_id>/review")
-@super_admin_required
+@roles_required("SUPER_ADMIN", "ADMIN_DPW")
 def review_request(req_id):
     claims = current_claims()
     data = request.get_json(silent=True) or {}
@@ -75,6 +75,7 @@ def review_request(req_id):
     if decision == "APPROVED":
         m = db.session.get(Member, req.member_nik)
         if m:
+            Position.query.filter(Position.member_nik == m.nik).delete(synchronize_session=False)
             db.session.delete(m)
     db.session.add(AuditLog(
         member_nik=req.member_nik, member_name=req.member_name,
