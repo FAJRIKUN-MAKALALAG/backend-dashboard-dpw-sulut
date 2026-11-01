@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from flask import Blueprint, jsonify, request
 
 from ..auth import current_claims, login_required, roles_required
+from ..cache import get_or_compute, invalidate_all_data_cache
 from ..extensions import db
 from ..models import AuditLog, DeletionRequest, Member, Position
 from ..utils import apply_scope, in_scope, row_to_dict
@@ -19,11 +20,18 @@ DEL_FIELDS = {
 @bp.get("/deletion-requests")
 @login_required
 def list_requests():
-    q = apply_scope(DeletionRequest.query, current_claims(), DeletionRequest)
-    if request.args.get("status"):
-        q = q.filter(DeletionRequest.status == request.args["status"])
-    rows = q.order_by(DeletionRequest.created_at.desc()).limit(500).all()
-    return jsonify(items=[row_to_dict(r, DEL_FIELDS) for r in rows])
+    claims = current_claims()
+    status_filter = request.args.get("status") or ""
+
+    def _compute():
+        q = apply_scope(DeletionRequest.query, claims, DeletionRequest)
+        if status_filter:
+            q = q.filter(DeletionRequest.status == status_filter)
+        rows = q.order_by(DeletionRequest.created_at.desc()).limit(500).all()
+        return {"items": [row_to_dict(r, DEL_FIELDS) for r in rows]}
+
+    payload = get_or_compute("deletions", claims, f"st={status_filter}", ttl_seconds=4.0, compute_fn=_compute)
+    return jsonify(payload)
 
 
 @bp.post("/deletion-requests")
@@ -50,6 +58,7 @@ def create_request():
         reason=reason, actor=claims.get("adminName"), dpd=m.dpd,
     ))
     db.session.commit()
+    invalidate_all_data_cache()
     return jsonify(row_to_dict(req, DEL_FIELDS)), 201
 
 
@@ -84,4 +93,5 @@ def review_request(req_id):
         actor=claims.get("adminName"), dpd=req.dpd,
     ))
     db.session.commit()
+    invalidate_all_data_cache()
     return jsonify(row_to_dict(req, DEL_FIELDS))

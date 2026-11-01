@@ -1,3 +1,4 @@
+import gzip
 import os
 from flask import Flask, jsonify, request, g
 from flask_cors import CORS
@@ -34,6 +35,40 @@ def create_app() -> Flask:
     from .routes import register_blueprints
 
     register_blueprints(app)
+
+    @app.after_request
+    def compress_json_response(response):
+        """Kompresi Gzip otomatis (~85% lebih hemat bandwidth) untuk respons JSON berukuran >= 1 KB."""
+        if (
+            response.direct_passthrough
+            or response.status_code < 200
+            or response.status_code >= 300
+            or "Content-Encoding" in response.headers
+        ):
+            return response
+
+        accept_encoding = request.headers.get("Accept-Encoding", "")
+        if "gzip" not in accept_encoding.lower():
+            return response
+
+        if response.mimetype not in ("application/json", "text/plain", "text/csv"):
+            return response
+
+        raw_data = response.get_data()
+        if len(raw_data) < 1024:
+            return response
+
+        compressed = gzip.compress(raw_data, compresslevel=5)
+        if len(compressed) >= len(raw_data):
+            return response
+
+        response.set_data(compressed)
+        response.headers["Content-Encoding"] = "gzip"
+        response.headers["Content-Length"] = str(len(compressed))
+        vary = response.headers.get("Vary", "")
+        if "Accept-Encoding" not in vary:
+            response.headers["Vary"] = f"{vary}, Accept-Encoding".lstrip(", ")
+        return response
 
     @app.get("/api/health")
     def health():

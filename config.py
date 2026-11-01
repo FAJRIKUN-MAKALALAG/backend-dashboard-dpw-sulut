@@ -22,12 +22,14 @@ class DatabaseConfig:
         _raw_db = _raw_db.replace("postgresql://", "postgresql+psycopg2://", 1)
     SQLALCHEMY_DATABASE_URI = _raw_db
     SQLALCHEMY_TRACK_MODIFICATIONS = False
-    # Connection pool untuk beban data besar
+    # Connection pool untuk beban data besar & 100+ concurrent users (aman untuk PostgreSQL / Supabase Pooler)
     SQLALCHEMY_ENGINE_OPTIONS = {
-        "pool_size": _int("DB_POOL_SIZE", 10),
-        "max_overflow": _int("DB_MAX_OVERFLOW", 20),
+        "pool_size": _int("DB_POOL_SIZE", 8),
+        "max_overflow": _int("DB_MAX_OVERFLOW", 12),
+        "pool_timeout": _int("DB_POOL_TIMEOUT", 30),
         "pool_recycle": _int("DB_POOL_RECYCLE", 1800),
         "pool_pre_ping": True,
+        "connect_args": {"connect_timeout": 10},
     }
 
 
@@ -40,6 +42,7 @@ class AppConfig(DatabaseConfig):
     MAX_PAGE_SIZE = _int("MAX_PAGE_SIZE", 500)
     BULK_CHUNK_SIZE = _int("BULK_CHUNK_SIZE", 1000)
     BULK_MAX_ROWS = _int("BULK_MAX_ROWS", 20000)
+    CACHE_TTL_SECONDS = _int("CACHE_TTL_SECONDS", 8)
     # Foto base64 bisa besar; izinkan body hingga 50 MB untuk import massal
     MAX_CONTENT_LENGTH = 50 * 1024 * 1024
     JSON_SORT_KEYS = False
