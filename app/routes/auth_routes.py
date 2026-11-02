@@ -4,8 +4,10 @@ from sqlalchemy import func
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from ..auth import current_claims, login_required
+from ..cache import invalidate_all_data_cache
 from ..extensions import db
 from ..models import AppUser, Member, Position
+from ..utils import find_member_by_nik_or_incomplete_match, rename_member_nik_safely
 
 bp = Blueprint("auth", __name__)
 
@@ -118,50 +120,94 @@ def claims_for(u: AppUser) -> dict:
     }
 
 
+def resolve_territory_access(member: Member, user_role: str):
+    dpd = member.dpd or "ALL"
+    dpc = member.dpc or "ALL"
+    dprt = member.dprt or "ALL"
+    jabatan = member.jabatan or f"Pengurus {member.tingkat_kepengurusan}"
+
+    if user_role == "ADMIN_DPC":
+        pos_dpc = next(
+            (
+                p
+                for p in member.positions
+                if p.tingkat_kepengurusan == "DPC" and p.dpc and p.dpc not in ("ALL", "Umum (DPD)", "-", "")
+            ),
+            None,
+        )
+        if pos_dpc:
+            dpc = pos_dpc.dpc
+            if pos_dpc.jabatan:
+                jabatan = pos_dpc.jabatan
+        elif dpc in ("Umum (DPD)", "-", ""):
+            dpc = "ALL"
+    elif user_role == "ADMIN_DPRT":
+        pos_dprt = next(
+            (
+                p
+                for p in member.positions
+                if p.tingkat_kepengurusan == "DPRt" and p.dprt and p.dprt not in ("ALL", "Pusat/Umum", "-", "")
+            ),
+            None,
+        )
+        if pos_dprt:
+            if pos_dprt.dpc and pos_dprt.dpc not in ("ALL", "Umum (DPD)", "-", ""):
+                dpc = pos_dprt.dpc
+            if pos_dprt.dprt and pos_dprt.dprt not in ("ALL", "Pusat/Umum", "-", ""):
+                dprt = pos_dprt.dprt
+            if pos_dprt.jabatan:
+                jabatan = pos_dprt.jabatan
+
+    return dpd, dpc, dprt, jabatan
+
+
+def _matches_default_password(password: str, *nik_or_ekta_candidates: str) -> bool:
+    if password == "nasdem123":
+        return True
+    for raw_val in nik_or_ekta_candidates:
+        val = (raw_val or "").strip()
+        if len(val) >= 6 and password == val[-6:]:
+            return True
+        if len(val) >= 4 and password == f"Nasdem@{val[-4:]}":
+            return True
+    return False
+
+
 @bp.post("/auth/login")
 def login():
     """
-    Login sistem Partai NasDem Sulut:
+    Login sistem Partai NasDem Sulut (ketat berbasis NIK / Nomor e-KTA):
     - Akun Super Admin / Pengurus yang sudah punya password custom -> langsung diverifikasi.
-    - Pengurus baru dari data impor -> otomatis login & aktivasi menggunakan Password Default:
-      1. 6 digit terakhir NIK KTP (misal: NIK 7105011204850003 -> password '850003')
-      2. 'nasdem123'
-      3. 'Nasdem@[4 digit terakhir NIK]'
+    - Mendukung login baik menggunakan NIK tersimpan (<16 digit hasil impor Excel) maupun 16 digit NIK KTP asli
+      (otomatis menyelaraskan NIK <16 digit ke 16 digit KTP bila cocok tunggal & kata sandi valid).
     """
     data = request.get_json(silent=True) or {}
     raw_ident = (data.get("username") or "").strip()
     ident = raw_ident.lower()
-    clean_ident = raw_ident.replace(" ", "").replace("-", "").lower()
+    clean_ident = raw_ident.replace(" ", "").replace("-", "").strip()
+    clean_ident_low = clean_ident.lower()
     password = (data.get("password") or "").strip()
 
     if not ident or not password:
-        return jsonify(error="Username/NIK dan password wajib diisi"), 400
+        return jsonify(error="NIK dan kata sandi wajib diisi"), 400
 
-    # 1. Cari di tabel AppUser (akun yang sudah aktif)
+    # 1. Cari langsung di tabel AppUser (akun yang sudah aktif)
     user = AppUser.query.filter(
         (func.lower(AppUser.username) == ident)
-        | (func.lower(AppUser.username) == clean_ident)
+        | (func.lower(AppUser.username) == clean_ident_low)
         | (func.lower(AppUser.member_nik) == ident)
-        | (func.lower(AppUser.member_nik) == clean_ident)
+        | (func.lower(AppUser.member_nik) == clean_ident_low)
         | (func.lower(AppUser.nomor_ekta) == ident)
-        | (func.lower(AppUser.nomor_ekta) == clean_ident)
+        | (func.lower(AppUser.nomor_ekta) == clean_ident_low)
     ).first()
 
     if user:
         if not user.is_active:
             return jsonify(error="Akun dinonaktifkan oleh Super Administrator. Hubungi DPW."), 403
 
-        # Cek kecocokan password hash ATAU fallback default password
         pwd_match = check_password_hash(user.password_hash, password)
         if not pwd_match:
-            # Fallback default password jika belum pernah diganti atau lupa
-            nik_clean = (user.member_nik or user.username or "")
-            is_default_pwd = (
-                password == "nasdem123"
-                or (len(nik_clean) >= 6 and password == nik_clean[-6:])
-                or (len(nik_clean) >= 4 and password == f"Nasdem@{nik_clean[-4:]}")
-            )
-            if is_default_pwd:
+            if _matches_default_password(password, user.member_nik, user.username, user.nomor_ekta):
                 user.password_hash = generate_password_hash(password)
                 db.session.commit()
                 pwd_match = True
@@ -175,59 +221,53 @@ def login():
         token = create_access_token(identity=str(user.id), additional_claims=claims)
         return jsonify(token=token, session=claims)
 
-    # 2. Jika akun belum ada di AppUser, cari di tabel Member
-    member = Member.query.filter(
-        (func.lower(Member.nik) == ident)
-        | (func.lower(Member.nik) == clean_ident)
-        | (func.lower(Member.nomor_ekta) == ident)
-        | (func.lower(Member.nomor_ekta) == clean_ident)
-    ).first()
+    # 2. Cari di tabel Member (termasuk pencocokan aman 16 digit NIK KTP ke NIK SK <16 digit)
+    member, should_heal_nik = find_member_by_nik_or_incomplete_match(clean_ident)
 
     if not member:
-        return jsonify(error="NIK atau akun tidak ditemukan di database kepengurusan Partai NasDem Sulut"), 404
+        return jsonify(error="NIK atau Nomor e-KTA tidak ditemukan di database kepengurusan Partai NasDem Sulut"), 404
 
-    # Cek apakah password cocok dengan format Default Password (Opsi 2):
-    nik_str = member.nik or ""
-    is_default_match = (
-        password == "nasdem123"
-        or (len(nik_str) >= 6 and password == nik_str[-6:])
-        or (len(nik_str) >= 4 and password == f"Nasdem@{nik_str[-4:]}")
-        or (member.nomor_ekta and len(member.nomor_ekta) >= 6 and password == member.nomor_ekta[-6:])
-    )
+    # Cek apakah Member ini sebenarnya sudah punya akun AppUser pada NIK lamanya (<16 digit)
+    existing_member_user = AppUser.query.filter(
+        (AppUser.member_nik == member.nik) | (func.lower(AppUser.username) == member.nik.lower())
+    ).first()
 
-    if not is_default_match:
+    if existing_member_user:
+        if not existing_member_user.is_active:
+            return jsonify(error="Akun dinonaktifkan oleh Super Administrator. Hubungi DPW."), 403
+
+        pwd_match = check_password_hash(existing_member_user.password_hash, password)
+        if not pwd_match and _matches_default_password(
+            password, existing_member_user.member_nik, clean_ident, member.nomor_ekta
+        ):
+            existing_member_user.password_hash = generate_password_hash(password)
+            pwd_match = True
+
+        if not pwd_match:
+            return jsonify(
+                error="Kata sandi salah. Silakan periksa kembali kata sandi Anda atau gunakan menu 'Aktivasi Pengurus'."
+            ), 401
+
+        target_user_id = existing_member_user.id
+        if should_heal_nik:
+            rename_member_nik_safely(db.session, member, clean_ident)
+            invalidate_all_data_cache()
+        db.session.commit()
+        refreshed_user = db.session.get(AppUser, target_user_id)
+        claims = claims_for(refreshed_user)
+        token = create_access_token(identity=str(refreshed_user.id), additional_claims=claims)
+        return jsonify(token=token, session=claims)
+
+    # 3. Pengurus belum punya akun AppUser -> verifikasi default password
+    if not _matches_default_password(password, member.nik, clean_ident, member.nomor_ekta):
         return jsonify(
             error="Kata sandi salah. Silakan periksa kembali kata sandi Anda atau gunakan menu 'Aktivasi Pengurus'."
         ), 401
 
-def resolve_territory_access(member: Member, user_role: str):
-    dpd = member.dpd or "ALL"
-    dpc = member.dpc or "ALL"
-    dprt = member.dprt or "ALL"
-    jabatan = member.jabatan or f"Pengurus {member.tingkat_kepengurusan}"
+    if should_heal_nik:
+        member = rename_member_nik_safely(db.session, member, clean_ident)
+        invalidate_all_data_cache()
 
-    if user_role == "ADMIN_DPC":
-        pos_dpc = next((p for p in member.positions if p.tingkat_kepengurusan == "DPC" and p.dpc and p.dpc not in ("ALL", "Umum (DPD)", "-", "")), None)
-        if pos_dpc:
-            dpc = pos_dpc.dpc
-            if pos_dpc.jabatan:
-                jabatan = pos_dpc.jabatan
-        elif dpc in ("Umum (DPD)", "-", ""):
-            dpc = "ALL"
-    elif user_role == "ADMIN_DPRT":
-        pos_dprt = next((p for p in member.positions if p.tingkat_kepengurusan == "DPRt" and p.dprt and p.dprt not in ("ALL", "Pusat/Umum", "-", "")), None)
-        if pos_dprt:
-            if pos_dprt.dpc and pos_dprt.dpc not in ("ALL", "Umum (DPD)", "-", ""):
-                dpc = pos_dprt.dpc
-            if pos_dprt.dprt and pos_dprt.dprt not in ("ALL", "Pusat/Umum", "-", ""):
-                dprt = pos_dprt.dprt
-            if pos_dprt.jabatan:
-                jabatan = pos_dprt.jabatan
-
-    return dpd, dpc, dprt, jabatan
-
-
-    # Otomatis buatkan akun AppUser untuk pengurus atau anggota ini!
     user_role = determine_role(member)
     dpd_val, dpc_val, dprt_val, jab_val = resolve_territory_access(member, user_role)
     new_user = AppUser(
@@ -260,10 +300,7 @@ def check_pengurus():
     if not clean_ident:
         return jsonify(error="Nomor NIK KTP atau e-KTA wajib diisi"), 400
 
-    member = Member.query.filter(
-        (func.lower(Member.nik) == clean_ident.lower())
-        | (func.lower(Member.nomor_ekta) == clean_ident.lower())
-    ).first()
+    member, should_heal_nik = find_member_by_nik_or_incomplete_match(clean_ident)
 
     if not member:
         return jsonify(
@@ -271,14 +308,15 @@ def check_pengurus():
             error="NIK / Nomor e-KTA tidak ditemukan dalam database kepengurusan Partai NasDem Sulut. Silakan hubungi Sekretariat DPW.",
         ), 404
 
-    # Cek apakah sudah terdaftar di AppUser
     user = AppUser.query.filter(
         (AppUser.member_nik == member.nik) | (func.lower(AppUser.username) == member.nik.lower())
     ).first()
 
+    effective_nik = clean_ident if should_heal_nik else member.nik
     return jsonify({
         "found": True,
-        "nik": member.nik,
+        "nik": effective_nik,
+        "nikAutoCorrectedFrom": member.nik if should_heal_nik else None,
         "nomorEkta": member.nomor_ekta or "-",
         "namaLengkap": member.nama_lengkap,
         "jabatan": member.jabatan or "Pengurus",
@@ -304,13 +342,14 @@ def activate_pengurus():
     if not new_password or len(new_password) < 6:
         return jsonify(error="Kata sandi baru minimal 6 karakter"), 400
 
-    member = Member.query.filter(
-        (func.lower(Member.nik) == clean_ident.lower())
-        | (func.lower(Member.nomor_ekta) == clean_ident.lower())
-    ).first()
+    member, should_heal_nik = find_member_by_nik_or_incomplete_match(clean_ident)
 
     if not member:
         return jsonify(error="Data pengurus dengan NIK tersebut tidak ditemukan di database"), 404
+
+    if should_heal_nik:
+        member = rename_member_nik_safely(db.session, member, clean_ident)
+        invalidate_all_data_cache()
 
     # Cari apakah sudah ada AppUser
     user = AppUser.query.filter(
@@ -321,6 +360,7 @@ def activate_pengurus():
     dpd_val, dpc_val, dprt_val, jab_val = resolve_territory_access(member, user_role)
 
     if user:
+        user.member_nik = member.nik
         user.password_hash = generate_password_hash(new_password)
         user.full_name = member.nama_lengkap
         user.role = user_role

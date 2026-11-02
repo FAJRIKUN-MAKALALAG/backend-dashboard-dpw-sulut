@@ -6,7 +6,7 @@ from sqlalchemy.orm import defer, selectinload
 from ..auth import current_claims, login_required, super_admin_required
 from ..cache import get_or_compute, invalidate_all_data_cache
 from ..extensions import db
-from ..models import AuditLog, Member, Position
+from ..models import AppUser, AuditLog, Member, Position
 from ..services.referral_service import find_direct_leader
 from ..services.image_storage import intercept_and_store_member_photos
 from ..utils import (
@@ -16,7 +16,9 @@ from ..utils import (
     SUMMARY_COLS,
     apply_scope,
     in_scope,
+    is_acceptable_nik,
     is_generated_nik,
+    is_subsequence_digits,
     make_position_id,
     member_in_scope,
     member_scope_query,
@@ -24,6 +26,7 @@ from ..utils import (
     payload_to_member_values,
     position_values_from_row,
     refresh_member_summary,
+    rename_member_nik_safely,
 )
 
 bp = Blueprint("members", __name__)
@@ -195,8 +198,8 @@ def create_member():
 
     values = payload_to_member_values(request.get_json(silent=True) or {})
     nik = values.get("nik")
-    if not nik or not nik.isdigit() or len(nik) != 16:
-        return jsonify(error="NIK harus 16 digit angka"), 400
+    if not is_acceptable_nik(nik):
+        return jsonify(error="NIK harus berupa angka (8-20 digit)"), 400
     for req in ("nama_lengkap", "dpd"):
         if not values.get(req):
             return jsonify(error=f"Field {req} wajib diisi"), 400
@@ -249,17 +252,15 @@ def update_member(nik):
     values = payload_to_member_values(data)
     values.pop("nik", None)
 
-    # Dukungan koreksi NIK jika admin mengubah NIK pada formulir edit
+    # Dukungan koreksi NIK jika admin mengubah NIK pada formulir edit (misal koreksi 15 digit -> 16 digit)
     if new_nik and str(new_nik).strip() != clean_nik:
         clean_new_nik = str(new_nik).strip()
-        if clean_new_nik.isdigit() and len(clean_new_nik) == 16:
-            existing = db.session.get(Member, clean_new_nik)
-            if existing and existing.nik != clean_nik:
-                return jsonify(error="NIK baru sudah terdaftar pada anggota lain"), 409
-            m.nik = clean_new_nik
-            for pos_item in m.positions:
-                pos_item.member_nik = clean_new_nik
-            db.session.flush()
+        if not is_acceptable_nik(clean_new_nik):
+            return jsonify(error="NIK baru harus berupa angka (8-20 digit)"), 400
+        existing = db.session.get(Member, clean_new_nik)
+        if existing and existing.nik != clean_nik:
+            return jsonify(error="NIK baru sudah terdaftar pada anggota lain"), 409
+        m = rename_member_nik_safely(db.session, m, clean_new_nik)
 
     if not in_scope(claims, values.get("dpd", m.dpd), values.get("dpc", m.dpc), values.get("dprt", m.dprt)):
         if not member_in_scope(claims, m):
@@ -273,7 +274,7 @@ def update_member(nik):
         return jsonify(error="Status tidak valid"), 400
 
     # Simpan berkas foto fisik WebP jika ada update foto
-    values = intercept_and_store_member_photos(values, nik)
+    values = intercept_and_store_member_photos(values, m.nik)
 
     _apply_referral_and_leader(values)
     is_pengurus_val = values.get("is_pengurus")
@@ -483,8 +484,8 @@ def _upsert_rows(raw_rows, claims):
         v.setdefault("dpc", "-")
         v.setdefault("dprt", "-")
         nik = v.get("nik") or ""
-        if not (nik.isdigit() and len(nik) == 16):
-            errors.append({"row": i, "nik": nik, "error": "NIK harus 16 digit angka"})
+        if not is_acceptable_nik(nik):
+            errors.append({"row": i, "nik": nik, "error": "NIK harus berupa angka (8-20 digit)"})
             continue
         if not all(v.get(k) for k in ("nama_lengkap", "dpd")):
             errors.append({"row": i, "nik": nik, "error": "Nama/DPD wajib diisi"})
@@ -526,6 +527,20 @@ def _upsert_rows(raw_rows, claims):
             for m in Member.query.options(selectinload(Member.positions)).filter(Member.nik.in_(part)):
                 if m.positions or m.is_pengurus:
                     refresh_member_summary(m)
+                # Sinkronkan akun login AppUser lama yang memakai NIK <16 digit bila kini diperbarui ke 16 digit
+                if len(m.nik) == 16 and not is_generated_nik(m.nik):
+                    short_users = AppUser.query.filter(
+                        AppUser.member_nik.like(f"{m.nik[:6]}%"),
+                        func.length(AppUser.member_nik) != 16,
+                    ).all()
+                    for su in short_users:
+                        snik = (su.member_nik or "").strip()
+                        same_name = (su.full_name or "").strip().lower() == (m.nama_lengkap or "").strip().lower()
+                        if same_name and 10 <= len(snik) < 16 and is_subsequence_digits(snik, m.nik):
+                            taken = AppUser.query.filter(func.lower(AppUser.username) == m.nik.lower()).first()
+                            su.member_nik = m.nik
+                            if su.username == snik and (not taken or taken.id == su.id):
+                                su.username = m.nik
     return errors, len(people) + len(people_pos), len(positions)
 
 

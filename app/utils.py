@@ -1,9 +1,9 @@
 """Serialisasi snake_case (DB) <-> camelCase (frontend), sanitasi, dan scoping wilayah."""
 from datetime import date, datetime
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 
-from .models import Member, Position
+from .models import AppUser, Member, Position
 
 STATUS_VALUES = (
     "Aktif",
@@ -163,6 +163,133 @@ def is_generated_nik(nik: str) -> bool:
 
     nik = nik or ""
     return bool(re.match(r"^0{6,}", nik) or re.match(r"^71\d{2}(11|22|33|44|55|99)26\d{8}$", nik))
+
+
+def is_acceptable_nik(nik: str) -> bool:
+    """NIK angka yang diterima sistem (standar 16 digit, toleransi 8-20 digit untuk impor belum lengkap)."""
+    s = str(nik or "").strip()
+    return bool(s.isdigit() and 8 <= len(s) <= 20)
+
+
+def is_subsequence_digits(short_s: str, long_s: str) -> bool:
+    """True bila seluruh digit short_s muncul secara berurutan di dalam long_s."""
+    it = iter(long_s)
+    return all(ch in it for ch in short_s)
+
+
+def find_member_by_nik_or_incomplete_match(clean_ident: str):
+    """Cari Member berdasarkan NIK/e-KTA persis, atau pencocokan aman NIK KTP 16 digit ke NIK SK <16 digit.
+
+    Mengembalikan tuple `(member, should_auto_heal_nik)`:
+    - `should_auto_heal_nik = True` hanya bila pengguna memasukkan 16 digit angka valid dan cocok tunggal
+      dengan 1 pengurus di database yang NIK tersimpannya masih belum 16 digit akibat salah ketik Excel.
+    """
+    ident_str = str(clean_ident or "").strip()
+    if not ident_str:
+        return None, False
+
+    ident_low = ident_str.lower()
+    exact = Member.query.filter(
+        (func.lower(Member.nik) == ident_low)
+        | (func.lower(Member.nomor_ekta) == ident_low)
+    ).first()
+    if exact:
+        return exact, False
+
+    # Fallback cerdas khusus bila input adalah 16 digit NIK KTP asli namun di DB tercatat kurang/lebih 1-2 digit
+    if ident_str.isdigit() and len(ident_str) == 16 and not is_generated_nik(ident_str):
+        candidates = Member.query.filter(
+            Member.nik.like(f"{ident_str[:6]}%"),
+            func.length(Member.nik) != 16,
+        ).all()
+
+        matched = []
+        for cand in candidates:
+            cnik = (cand.nik or "").strip()
+            if not cnik.isdigit() or is_generated_nik(cnik):
+                continue
+            if 12 <= len(cnik) < 16 and (16 - len(cnik)) <= 2 and is_subsequence_digits(cnik, ident_str):
+                matched.append(cand)
+            elif 16 < len(cnik) <= 18 and (len(cnik) - 16) <= 2 and is_subsequence_digits(ident_str, cnik):
+                matched.append(cand)
+
+        if len(matched) == 1:
+            return matched[0], True
+
+        # Jika ada >1 kandidat di kecamatan yang sama, perketat ke 12 digit awal (Kode Wilayah + Tgl Lahir KTP)
+        strict_12 = [c for c in matched if (c.nik or "")[:12] == ident_str[:12]]
+        if len(strict_12) == 1:
+            return strict_12[0], True
+
+    return None, False
+
+
+def rename_member_nik_safely(session, member: Member, new_nik: str) -> Member:
+    """Perbarui Primary Key `members.nik` beserta `positions` dan akun `app_users` tanpa melanggar FK PostgreSQL."""
+    old_nik = str(member.nik or "").strip()
+    clean_new = str(new_nik or "").strip()
+    if not old_nik or not clean_new or old_nik == clean_new:
+        return member
+
+    # Pastikan NIK baru belum dipakai orang lain
+    conflict = session.get(Member, clean_new)
+    if conflict and conflict.nik != old_nik:
+        return member
+
+    pos_snapshots = [
+        {c: getattr(p, c) for c in POSITION_COLS}
+        for p in list(member.positions or [])
+    ]
+
+    # 1. Lepas sementara positions lama agar FK members.nik tidak memblokir UPDATE PK di PostgreSQL
+    session.query(Position).filter(Position.member_nik == old_nik).delete(synchronize_session=False)
+    session.flush()
+
+    # 2. Update PK pada tabel members dan referensi terkait
+    session.execute(
+        Member.__table__.update()
+        .where(Member.__table__.c.nik == old_nik)
+        .values(nik=clean_new)
+    )
+    session.query(Member).filter(Member.kader_perekrut_nik == old_nik).update(
+        {Member.kader_perekrut_nik: clean_new}, synchronize_session=False
+    )
+    session.query(Member).filter(Member.ketua_langsung_nik == old_nik).update(
+        {Member.ketua_langsung_nik: clean_new}, synchronize_session=False
+    )
+
+    # 3. Sinkronkan akun login AppUser agar pengurus langsung login dengan NIK baru tanpa putus sandi
+    linked_users = session.query(AppUser).filter(
+        (AppUser.member_nik == old_nik) | (func.lower(AppUser.username) == old_nik.lower())
+    ).all()
+    username_taken = (
+        session.query(AppUser)
+        .filter(func.lower(AppUser.username) == clean_new.lower())
+        .first()
+    )
+    for u in linked_users:
+        u.member_nik = clean_new
+        if u.username.strip().lower() == old_nik.lower() and (not username_taken or username_taken.id == u.id):
+            u.username = clean_new
+
+    # 4. Masukkan kembali positions dengan member_nik & hash id yang baru
+    for snap in pos_snapshots:
+        snap["member_nik"] = clean_new
+        snap["dpc"] = snap.get("dpc") or "-"
+        snap["dprt"] = snap.get("dprt") or "-"
+        snap["id"] = make_position_id(
+            clean_new,
+            snap.get("tingkat_kepengurusan"),
+            snap.get("dpd"),
+            snap["dpc"],
+            snap["dprt"],
+            snap["wilayah_penugasan"],
+        )
+        session.add(Position(**snap))
+
+    session.flush()
+    session.expire_all()
+    return session.get(Member, clean_new)
 
 
 
