@@ -88,15 +88,15 @@ SUMMARY_COLS = (
 )
 
 
-def make_position_id(nik, tingkat, dpd, dpc, dprt, wilayah) -> str:
-    """ID deterministik 1 kursi jabatan: orang (NIK) + badan organisasi (tingkat/wilayah/sub-organisasi).
+def make_position_id(nik, tingkat, dpd, dpc, dprt, wilayah, jabatan=None) -> str:
+    """ID deterministik 1 kursi jabatan: orang (NIK) + badan organisasi + nama jabatan.
 
-    Jabatan sengaja TIDAK ikut dalam id: seseorang hanya bisa menduduki satu kursi per badan organisasi,
-    sehingga mengubah jabatan = memperbarui kursi yang sama (tidak menjadi baris ganda).
+    Menyertakan jabatan memungkinkan seorang kader (1 NIK) memegang lebih dari satu jabatan
+    (rangkap jabatan) dalam badan organisasi yang sama secara sah tanpa saling menimpa.
     """
     import hashlib
 
-    parts = [nik, tingkat, dpd, dpc, dprt, wilayah]
+    parts = [nik, tingkat, dpd, dpc, dprt, wilayah, jabatan or ""]
     raw = "|".join(str(p or "").strip().lower() for p in parts)
     return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
@@ -111,7 +111,13 @@ def position_values_from_row(values: dict):
     pos["dprt"] = pos.get("dprt") or "-"
     pos["member_nik"] = values["nik"]
     pos["id"] = make_position_id(
-        values["nik"], tingkat, pos.get("dpd"), pos["dpc"], pos["dprt"], pos.get("wilayah_penugasan")
+        values["nik"],
+        tingkat,
+        pos.get("dpd"),
+        pos["dpc"],
+        pos["dprt"],
+        pos.get("wilayah_penugasan"),
+        pos.get("jabatan"),
     )
     return pos
 
@@ -284,6 +290,7 @@ def rename_member_nik_safely(session, member: Member, new_nik: str) -> Member:
             snap["dpc"],
             snap["dprt"],
             snap["wilayah_penugasan"],
+            snap.get("jabatan"),
         )
         session.add(Position(**snap))
 
