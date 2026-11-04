@@ -362,12 +362,16 @@ def activate_pengurus():
     if user:
         user.member_nik = member.nik
         user.password_hash = generate_password_hash(new_password)
-        user.full_name = member.nama_lengkap
-        user.role = user_role
-        user.dpd_access = dpd_val
-        user.dpc_access = dpc_val
-        user.dprt_access = dprt_val
-        user.jabatan = jab_val
+        # Jangan menimpa nama admin custom bila sudah diatur khusus oleh Super Admin
+        if not user.full_name:
+            user.full_name = member.nama_lengkap
+        # Pertahankan peran dan isolasi wilayah jika sudah diatur secara khusus oleh Super Admin
+        if not user.role or user.role == "ANGGOTA":
+            user.role = user_role
+            user.dpd_access = dpd_val
+            user.dpc_access = dpc_val
+            user.dprt_access = dprt_val
+            user.jabatan = jab_val
         user.is_active = True
     else:
         user = AppUser(
