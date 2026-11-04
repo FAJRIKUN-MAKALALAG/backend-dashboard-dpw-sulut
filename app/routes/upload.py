@@ -1,7 +1,7 @@
 """Endpoint untuk upload dan serving berkas fisik gambar (Foto KTP & Profil)."""
 import logging
 import os
-from flask import Blueprint, jsonify, request, send_from_directory, current_app
+from flask import Blueprint, jsonify, request, send_from_directory, current_app, Response
 from ..auth import login_required, current_claims
 from ..services.image_storage import UPLOADS_DIR, optimize_and_save_image
 
@@ -20,7 +20,10 @@ def serve_uploaded_file(category: str, filename: str):
     full_path = os.path.join(target_dir, filename)
     if not os.path.exists(full_path):
         logger.warning(f"[UPLOAD-SERVE-404] Berkas foto {cat} tidak ditemukan: {filename} di {target_dir}")
-        return jsonify(error="Berkas tidak ditemukan"), 404
+        resp = Response("Berkas tidak ditemukan", status=404, mimetype="text/plain")
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Cross-Origin-Resource-Policy"] = "cross-origin"
+        return resp
 
     # Cache browser 7 hari untuk efisiensi loading + header CORP & CORS
     resp = send_from_directory(target_dir, filename, max_age=86400 * 7)
