@@ -170,3 +170,23 @@ def intercept_and_store_member_photos(values: dict, default_nik: Optional[str] =
             logger.error(f"[IMAGE-ERROR] Gagal memproses berkas Foto KTP untuk NIK {nik}: {e}", exc_info=True)
 
     return values
+
+
+def delete_physical_image(url: Optional[str]) -> bool:
+    """Menghapus berkas fisik foto dari disk server jika URL menunjuk ke /api/uploads/."""
+    if not url or not isinstance(url, str):
+        return False
+    clean_url = url.split("?")[0].strip()
+    prefix = "/api/uploads/"
+    if not clean_url.startswith(prefix):
+        return False
+    rel_path = clean_url[len(prefix):]
+    full_path = os.path.join(UPLOADS_DIR, rel_path)
+    if os.path.exists(full_path) and os.path.isfile(full_path):
+        try:
+            os.remove(full_path)
+            logger.info(f"[STORAGE-DELETED] Berkas fisik foto dihapus dari disk: {full_path}")
+            return True
+        except Exception as e:
+            logger.warning(f"[STORAGE-DELETE-FAILED] Gagal menghapus berkas fisik {full_path}: {e}")
+    return False

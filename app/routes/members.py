@@ -8,7 +8,7 @@ from ..cache import get_or_compute, invalidate_all_data_cache
 from ..extensions import db
 from ..models import AppUser, AuditLog, Member, Position
 from ..services.referral_service import find_direct_leader
-from ..services.image_storage import intercept_and_store_member_photos
+from ..services.image_storage import intercept_and_store_member_photos, delete_physical_image
 from ..utils import (
     HEAVY_COLS,
     POSITION_COLS,
@@ -276,6 +276,12 @@ def update_member(nik):
     # Simpan berkas foto fisik WebP jika ada update foto
     values = intercept_and_store_member_photos(values, m.nik)
 
+    # Bersihkan berkas fisik lama jika foto eksplisit dihapus
+    if "foto_profil_url" in values and not values["foto_profil_url"] and m.foto_profil_url:
+        delete_physical_image(m.foto_profil_url)
+    if "foto_ktp_url" in values and not values["foto_ktp_url"] and m.foto_ktp_url:
+        delete_physical_image(m.foto_ktp_url)
+
     _apply_referral_and_leader(values)
     is_pengurus_val = values.get("is_pengurus")
     pos = position_values_from_row({**values, "nik": m.nik})
@@ -372,6 +378,12 @@ def update_my_profile():
 
     # Intercept Base64 photos -> simpan ke disk WebP
     filtered_values = intercept_and_store_member_photos(filtered_values, m.nik)
+
+    # Bersihkan berkas fisik lama jika foto eksplisit dihapus
+    if "foto_profil_url" in filtered_values and not filtered_values["foto_profil_url"] and m.foto_profil_url:
+        delete_physical_image(m.foto_profil_url)
+    if "foto_ktp_url" in filtered_values and not filtered_values["foto_ktp_url"] and m.foto_ktp_url:
+        delete_physical_image(m.foto_ktp_url)
 
     for k, v in filtered_values.items():
         if hasattr(m, k):
