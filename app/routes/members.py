@@ -305,9 +305,25 @@ def update_member(nik):
         m.tanggal_sk = None
         m.urutan = None
     elif pos:
-        # Jika data pengurus diisi, perbarui posisi struktural utama
-        Position.query.filter(Position.member_nik == m.nik).delete(synchronize_session=False)
-        db.session.add(Position(**pos))
+        # Perbarui posisi struktural secara selektif tanpa menghapus rangkap jabatan lainnya milik kader
+        existing_exact = db.session.get(Position, pos["id"])
+        if existing_exact:
+            for k, v in pos.items():
+                if k != "id" and hasattr(existing_exact, k):
+                    setattr(existing_exact, k, v)
+        else:
+            same_suborg_positions = Position.query.filter(
+                Position.member_nik == m.nik,
+                Position.tingkat_kepengurusan == pos["tingkat_kepengurusan"],
+                Position.dpd == pos["dpd"],
+                Position.dpc == pos["dpc"],
+                Position.dprt == pos["dprt"],
+                Position.wilayah_penugasan == pos["wilayah_penugasan"],
+            ).all()
+            if len(same_suborg_positions) == 1:
+                db.session.delete(same_suborg_positions[0])
+                db.session.flush()
+            db.session.add(Position(**pos))
         db.session.flush()
         db.session.expire(m, ["positions"])
         refresh_member_summary(m)
@@ -488,7 +504,7 @@ def _upsert_people(rows: dict, *, keep_domicile: bool, chunk: int):
         db.session.execute(stmt)
 
 
-def _upsert_rows(raw_rows, claims):
+def _upsert_rows(raw_rows, claims, replace_territory_suborgs: bool = False):
     """Inti import: baris flat (orang + jabatan) -> members (1 per NIK) + positions (1 per kursi)."""
     errors, people, people_pos, positions = [], {}, {}, {}
     for i, raw in enumerate(raw_rows):
@@ -521,6 +537,39 @@ def _upsert_rows(raw_rows, claims):
     _upsert_people(people, keep_domicile=False, chunk=chunk)
     _upsert_people(people_pos, keep_domicile=True, chunk=chunk)
 
+    replaced_old_niks = set()
+    if positions and replace_territory_suborgs:
+        target_scopes = {
+            (
+                p.get("tingkat_kepengurusan"),
+                p.get("dpd"),
+                p.get("dpc") or "-",
+                p.get("dprt") or "-",
+                p.get("wilayah_penugasan"),
+            )
+            for p in positions.values()
+        }
+        incoming_pos_ids = set(positions.keys())
+        for t_lvl, t_dpd, t_dpc, t_dprt, t_wil in target_scopes:
+            if not t_lvl or not t_dpd:
+                continue
+            q = Position.query.filter(
+                Position.tingkat_kepengurusan == t_lvl,
+                func.lower(Position.dpd) == str(t_dpd).lower(),
+            )
+            if t_lvl in ("DPC", "DPRt"):
+                q = q.filter(func.lower(Position.dpc) == str(t_dpc).lower())
+            if t_lvl == "DPRt":
+                q = q.filter(func.lower(Position.dprt) == str(t_dprt).lower())
+            if t_wil:
+                q = q.filter(func.lower(Position.wilayah_penugasan) == str(t_wil).lower())
+            for old_pos in q.all():
+                if old_pos.id not in incoming_pos_ids:
+                    if old_pos.member_nik:
+                        replaced_old_niks.add(old_pos.member_nik)
+                    db.session.delete(old_pos)
+        db.session.flush()
+
     if positions:
         update_cols = list(POSITION_COLS)
         for part in _chunks(list(positions.values()), chunk):
@@ -531,8 +580,8 @@ def _upsert_rows(raw_rows, claims):
             )
             db.session.execute(stmt)
 
-    # Hitung ulang ringkasan jabatan utama untuk orang yang punya jabatan
-    touched = list({*people, *people_pos})
+    # Hitung ulang ringkasan jabatan utama untuk orang yang punya jabatan atau yang jabatannya digantikan
+    touched = list({*people, *people_pos, *replaced_old_niks})
     if touched:
         db.session.expire_all()
         for part in _chunks(touched, 500):
@@ -561,14 +610,18 @@ def _upsert_rows(raw_rows, claims):
 def bulk_upsert():
     """Import massal. Orang disimpan sekali per NIK; jabatan disimpan terpisah (tanpa saling menimpa)."""
     claims = current_claims()
-    rows = (request.get_json(silent=True) or {}).get("members")
+    body = request.get_json(silent=True) or {}
+    rows = body.get("members")
+    replace_territory_suborgs = bool(body.get("replaceTerritorySubOrgs"))
     if not isinstance(rows, list) or not rows:
         return jsonify(error="Body harus berisi 'members': [ ... ]"), 400
     max_rows = current_app.config["BULK_MAX_ROWS"]
     if len(rows) > max_rows:
         return jsonify(error=f"Maksimal {max_rows} baris per request. Pecah menjadi beberapa batch."), 413
 
-    errors, people_count, position_count = _upsert_rows(rows, claims)
+    errors, people_count, position_count = _upsert_rows(
+        rows, claims, replace_territory_suborgs=replace_territory_suborgs
+    )
     if people_count:
         _audit(
             "-", f"{people_count} anggota / {position_count} jabatan", "IMPORT_MASSAL",

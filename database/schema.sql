@@ -111,3 +111,40 @@ CREATE TABLE IF NOT EXISTS app_users (
 );
 CREATE INDEX IF NOT EXISTS idx_app_users_member_nik ON app_users (member_nik);
 CREATE INDEX IF NOT EXISTS idx_app_users_role ON app_users (role);
+
+CREATE TABLE IF NOT EXISTS positions (
+    id VARCHAR(40) PRIMARY KEY,
+    member_nik VARCHAR(50) NOT NULL REFERENCES members(nik) ON DELETE CASCADE,
+    tingkat_kepengurusan VARCHAR(30) NOT NULL,
+    dpd VARCHAR(100) NOT NULL,
+    dpc VARCHAR(100) NOT NULL,
+    dprt VARCHAR(100) NOT NULL,
+    wilayah_penugasan VARCHAR(100),
+    jabatan VARCHAR(150),
+    nomor_sk VARCHAR(100),
+    tanggal_sk DATE,
+    urutan INTEGER,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_positions_member_nik ON positions (member_nik);
+CREATE INDEX IF NOT EXISTS idx_positions_wilayah ON positions (dpd, dpc, dprt, tingkat_kepengurusan);
+
+CREATE TABLE IF NOT EXISTS structure_slots (
+    id VARCHAR(100) PRIMARY KEY,
+    tingkat_kepengurusan VARCHAR(30) NOT NULL,
+    dpd VARCHAR(100) NOT NULL,
+    dpc VARCHAR(100) NOT NULL DEFAULT '-',
+    dprt VARCHAR(100) NOT NULL DEFAULT '-',
+    wilayah_penugasan VARCHAR(100) NOT NULL,
+    urutan INTEGER NOT NULL DEFAULT 1,
+    jabatan VARCHAR(150) NOT NULL,
+    is_baku BOOLEAN NOT NULL DEFAULT TRUE,
+    member_nik VARCHAR(50),
+    nomor_sk VARCHAR(100),
+    tanggal_sk DATE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_structure_slots_territory ON structure_slots (tingkat_kepengurusan, dpd, dpc, dprt);
+CREATE INDEX IF NOT EXISTS idx_structure_slots_member_nik ON structure_slots (member_nik);

@@ -36,6 +36,17 @@ def create_app() -> Flask:
 
     register_blueprints(app)
 
+    with app.app_context():
+        try:
+            db.create_all()
+        except Exception as exc:
+            logger.warning(f"Inisialisasi tabel otomatis dilewati: {exc}")
+        try:
+            from .routes.structure_slots import ensure_structure_slots_table_exists
+            ensure_structure_slots_table_exists()
+        except Exception as exc:
+            logger.warning(f"Inisialisasi tabel structure_slots dilewati: {exc}")
+
     @app.after_request
     def compress_json_response(response):
         """Kompresi Gzip otomatis (~85% lebih hemat bandwidth) untuk respons JSON berukuran >= 1 KB."""

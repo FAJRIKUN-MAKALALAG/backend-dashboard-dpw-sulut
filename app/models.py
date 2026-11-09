@@ -109,6 +109,42 @@ class Position(db.Model):
     __table_args__ = (db.Index("idx_positions_wilayah", "dpd", "dpc", "dprt", "tingkat_kepengurusan"),)
 
 
+class StructureSlot(db.Model):
+    """Satu kursi jabatan (slot) resmi maupun tambahan di suatu wilayah (DPW/DPD/DPC/DPRt).
+
+    Kursi ini tetap ada di database meskipun belum ada orang yang mengisinya (`member_nik = NULL`).
+    Mendukung pengisian manual satu per satu, penambahan kursi baru (+ Baris), maupun import massal Excel,
+    serta memungkinkan 1 orang (`member_nik`) menduduki lebih dari 1 kursi jabatan sekaligus.
+    """
+
+    __tablename__ = "structure_slots"
+
+    id = db.Column(db.String(100), primary_key=True)
+    tingkat_kepengurusan = db.Column(db.String(30), nullable=False, index=True)
+    dpd = db.Column(db.String(100), nullable=False, index=True)
+    dpc = db.Column(db.String(100), nullable=False, default="-", index=True)
+    dprt = db.Column(db.String(100), nullable=False, default="-", index=True)
+    wilayah_penugasan = db.Column(db.String(100), nullable=False, index=True)
+    urutan = db.Column(db.Integer, nullable=False, default=1, index=True)
+    jabatan = db.Column(db.String(150), nullable=False)
+    is_baku = db.Column(db.Boolean, default=True, nullable=False)
+    member_nik = db.Column(db.String(50), nullable=True, index=True)
+    nomor_sk = db.Column(db.String(100))
+    tanggal_sk = db.Column(db.Date)
+    created_at = db.Column(db.DateTime(timezone=True), server_default=func.now())
+    updated_at = db.Column(db.DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        db.Index(
+            "idx_structure_slots_territory",
+            "tingkat_kepengurusan",
+            "dpd",
+            "dpc",
+            "dprt",
+        ),
+    )
+
+
 class AuditLog(db.Model):
     __tablename__ = "audit_logs"
 

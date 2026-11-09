@@ -4,7 +4,8 @@ from datetime import timedelta
 
 from dotenv import load_dotenv
 
-load_dotenv()
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(_BASE_DIR, ".env"))
 
 
 def _int(name: str, default: int) -> int:

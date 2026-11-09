@@ -1,7 +1,7 @@
 """Endpoint untuk upload dan serving berkas fisik gambar (Foto KTP & Profil)."""
 import logging
 import os
-from flask import Blueprint, jsonify, request, send_from_directory, current_app, Response
+from flask import Blueprint, jsonify, request, send_from_directory, Response
 from ..auth import login_required, current_claims
 from ..services.image_storage import UPLOADS_DIR, optimize_and_save_image
 
@@ -14,21 +14,28 @@ def serve_uploaded_file(category: str, filename: str):
     """Menampilkan atau mengunduh berkas fisik foto KTP atau Profil."""
     cat = (category or "").lower().strip()
     if cat not in ("profile", "ktp"):
-        return jsonify(error="Kategori berkas tidak valid"), 404
+        resp = Response(b"", status=404, mimetype="image/webp")
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Cross-Origin-Resource-Policy"] = "cross-origin"
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        return resp
 
     target_dir = os.path.join(UPLOADS_DIR, cat)
     full_path = os.path.join(target_dir, filename)
     if not os.path.exists(full_path):
         logger.warning(f"[UPLOAD-SERVE-404] Berkas foto {cat} tidak ditemukan: {filename} di {target_dir}")
-        resp = Response("Berkas tidak ditemukan", status=404, mimetype="text/plain")
+        resp = Response(b"", status=404, mimetype="image/webp")
         resp.headers["Access-Control-Allow-Origin"] = "*"
         resp.headers["Cross-Origin-Resource-Policy"] = "cross-origin"
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        resp.headers["Cache-Control"] = "public, max-age=300"
         return resp
 
     # Cache browser 7 hari untuk efisiensi loading + header CORP & CORS
     resp = send_from_directory(target_dir, filename, max_age=86400 * 7)
     resp.headers["Access-Control-Allow-Origin"] = "*"
     resp.headers["Cross-Origin-Resource-Policy"] = "cross-origin"
+    resp.headers["X-Content-Type-Options"] = "nosniff"
     return resp
 
 

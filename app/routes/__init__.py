@@ -7,8 +7,20 @@ from .stats import bp as stats_bp
 from .ai import bp as ai_bp
 from .referrals import bp as referrals_bp
 from .upload import bp as upload_bp
+from .structure_slots import bp as structure_slots_bp
 
 
 def register_blueprints(app):
-    for bp in (auth_bp, members_bp, audit_bp, deletions_bp, users_bp, stats_bp, ai_bp, referrals_bp, upload_bp):
+    for bp in (
+        auth_bp,
+        members_bp,
+        audit_bp,
+        deletions_bp,
+        users_bp,
+        stats_bp,
+        ai_bp,
+        referrals_bp,
+        upload_bp,
+        structure_slots_bp,
+    ):
         app.register_blueprint(bp, url_prefix="/api")
