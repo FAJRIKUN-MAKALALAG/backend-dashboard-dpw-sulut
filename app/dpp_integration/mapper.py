@@ -142,3 +142,4 @@ def generate_dpp_password(nik: str, tgl_lahir: str = None) -> str:
     clean_nik = re.sub(r"\D", "", str(nik or ""))
     suffix = clean_nik[-6:] if len(clean_nik) >= 6 else "2029"
     return f"NasDem@{suffix}"
+

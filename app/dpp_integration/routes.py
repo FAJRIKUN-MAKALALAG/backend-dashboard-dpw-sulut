@@ -77,3 +77,4 @@ def create_kta_endpoint():
         logger.info(f"[DPP-SYNC-SUCCESS] Nomor e-KTA resmi {result['nomor_ekta']} disimpan ke database lokal untuk NIK {clean_nik}")
 
     return jsonify(result), (200 if result.get("success") else 400)
+

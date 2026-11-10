@@ -5,7 +5,10 @@ import os
 import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
-import requests
+try:
+    import requests
+except ImportError:
+    requests = None
 
 from .mapper import (
     format_birth_date,
@@ -53,17 +56,20 @@ class DppClient:
         self.base_url = (os.getenv("DPP_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
         self.email = os.getenv("DPP_ADMIN_EMAIL", "gabrielasenduk01@gmail.com")
         self.password = os.getenv("DPP_ADMIN_PASSWORD", "NasDem2029")
-        self.session = requests.Session()
-        self.session.headers.update(
-            {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            }
-        )
+        if requests:
+            self.session = requests.Session()
+            self.session.headers.update(
+                {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                }
+            )
+        else:
+            self.session = None
         self.last_login_at: float = 0
         self._wilayah_cache: Dict[str, Any] = {}
 
     def is_configured(self) -> bool:
-        return bool(self.email and self.password)
+        return bool(requests and self.email and self.password)
 
     def login(self) -> bool:
         """Melakukan login ke portal DPP dan menyimpan session cookie."""
@@ -390,3 +396,4 @@ def get_dpp_client() -> DppClient:
     if _dpp_client_instance is None:
         _dpp_client_instance = DppClient()
     return _dpp_client_instance
+

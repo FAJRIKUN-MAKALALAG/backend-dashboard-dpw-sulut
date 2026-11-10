@@ -238,20 +238,24 @@ def ensure_territory_slots_initialized(tingkat: str, dpd: str, dpc: str, dprt: s
             no = tpl["no"]
             jab = tpl["jabatan"]
             slot_id = make_slot_id(t, c_dpd, c_dpc, c_dprt, sub_org, no, jab)
-            slot_obj = StructureSlot(
-                id=slot_id,
-                tingkat_kepengurusan=t,
-                dpd=c_dpd,
-                dpc=c_dpc,
-                dprt=c_dprt,
-                wilayah_penugasan=sub_org,
-                urutan=no,
-                jabatan=jab,
-                is_baku=True,
-                member_nik=None,
-            )
-            db.session.add(slot_obj)
-            created_slots.append(slot_obj)
+            existing_obj = db.session.get(StructureSlot, slot_id)
+            if existing_obj:
+                created_slots.append(existing_obj)
+            else:
+                slot_obj = StructureSlot(
+                    id=slot_id,
+                    tingkat_kepengurusan=t,
+                    dpd=c_dpd,
+                    dpc=c_dpc,
+                    dprt=c_dprt,
+                    wilayah_penugasan=sub_org,
+                    urutan=no,
+                    jabatan=jab,
+                    is_baku=True,
+                    member_nik=None,
+                )
+                db.session.add(slot_obj)
+                created_slots.append(slot_obj)
 
         # Pasangkan pengurus yang sudah ada di tabel `positions` ke dalam `created_slots`
         used_slot_ids = set()
@@ -309,22 +313,29 @@ def ensure_territory_slots_initialized(tingkat: str, dpd: str, dpc: str, dprt: s
             extra_id = make_slot_id(
                 t, c_dpd, c_dpc, c_dprt, sub_org, next_no, f"{extra_jab}_{extra_pos.member_nik}"
             )
-            extra_slot = StructureSlot(
-                id=extra_id,
-                tingkat_kepengurusan=t,
-                dpd=c_dpd,
-                dpc=c_dpc,
-                dprt=c_dprt,
-                wilayah_penugasan=sub_org,
-                urutan=next_no,
-                jabatan=extra_jab,
-                is_baku=False,
-                member_nik=extra_pos.member_nik,
-                nomor_sk=extra_pos.nomor_sk,
-                tanggal_sk=extra_pos.tanggal_sk,
-            )
-            db.session.add(extra_slot)
-            created_slots.append(extra_slot)
+            existing_extra = db.session.get(StructureSlot, extra_id)
+            if existing_extra:
+                existing_extra.member_nik = extra_pos.member_nik
+                existing_extra.nomor_sk = extra_pos.nomor_sk
+                existing_extra.tanggal_sk = extra_pos.tanggal_sk
+                created_slots.append(existing_extra)
+            else:
+                extra_slot = StructureSlot(
+                    id=extra_id,
+                    tingkat_kepengurusan=t,
+                    dpd=c_dpd,
+                    dpc=c_dpc,
+                    dprt=c_dprt,
+                    wilayah_penugasan=sub_org,
+                    urutan=next_no,
+                    jabatan=extra_jab,
+                    is_baku=False,
+                    member_nik=extra_pos.member_nik,
+                    nomor_sk=extra_pos.nomor_sk,
+                    tanggal_sk=extra_pos.tanggal_sk,
+                )
+                db.session.add(extra_slot)
+                created_slots.append(extra_slot)
 
         db.session.commit()
         existing_slots = created_slots
