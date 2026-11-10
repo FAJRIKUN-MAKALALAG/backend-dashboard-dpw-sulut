@@ -127,6 +127,17 @@ def optimize_and_save_image(
     # 5. Simpan sebagai WebP terkompresi
     img.save(file_path, "WEBP", quality=quality, method=6)
 
+    # Bersihkan berkas lama dengan prefix NIK & kategori yang sama agar tidak menumpuk hash lama
+    prefix = f"{clean_id}_{cat_name}_"
+    try:
+        for existing_file in os.listdir(target_dir):
+            if existing_file != filename and existing_file.startswith(prefix) and existing_file.endswith(".webp"):
+                old_path = os.path.join(target_dir, existing_file)
+                if os.path.isfile(old_path):
+                    os.remove(old_path)
+    except OSError:
+        pass
+
     # 6. Hitung ukuran dan catat log sukses
     file_size_kb = os.path.getsize(file_path) / 1024
     url = f"/api/uploads/{cat_name}/{filename}"
@@ -190,3 +201,51 @@ def delete_physical_image(url: Optional[str]) -> bool:
         except Exception as e:
             logger.warning(f"[STORAGE-DELETE-FAILED] Gagal menghapus berkas fisik {full_path}: {e}")
     return False
+
+
+def resolve_stored_image_url(url: Optional[str]) -> Optional[str]:
+    """Memvalidasi dan menyelaraskan URL /api/uploads/ dengan berkas fisik di disk.
+
+    - Jika berkas persis ada di disk -> kembalikan URL apa adanya.
+    - Jika hash berubah namun berkas dengan prefix {nik}_{cat}_ tersedia -> kembalikan URL berkas yang tersedia.
+    - Jika menunjuk ke /api/uploads/ namun berkas fisik tidak ada sama sekali -> kembalikan None agar frontend tidak memicu 404.
+    """
+    if not url or not isinstance(url, str):
+        return None
+    clean_url = url.split("?")[0].strip()
+    if not clean_url:
+        return None
+    prefix = "/api/uploads/"
+    if not clean_url.startswith(prefix):
+        return url
+
+    rel_path = clean_url[len(prefix):]
+    parts = rel_path.split("/", 1)
+    if len(parts) != 2:
+        return None
+    cat, filename = parts[0], parts[1]
+    target_dir = os.path.join(UPLOADS_DIR, cat)
+    full_path = os.path.join(target_dir, filename)
+    if os.path.isfile(full_path):
+        return url
+
+    marker = f"_{cat}_"
+    if marker in filename and os.path.isdir(target_dir):
+        file_prefix = filename.split(marker)[0] + marker
+        try:
+            candidates = [
+                f
+                for f in os.listdir(target_dir)
+                if f.startswith(file_prefix)
+                and f.endswith(".webp")
+                and os.path.isfile(os.path.join(target_dir, f))
+            ]
+            if candidates:
+                candidates.sort(
+                    key=lambda f: os.path.getmtime(os.path.join(target_dir, f)),
+                    reverse=True,
+                )
+                return f"/api/uploads/{cat}/{candidates[0]}"
+        except OSError:
+            pass
+    return None

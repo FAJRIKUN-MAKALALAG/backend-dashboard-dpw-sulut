@@ -4,6 +4,7 @@ from datetime import date, datetime
 from sqlalchemy import func, or_, select
 
 from .models import AppUser, Member, Position
+from .services.image_storage import resolve_stored_image_url
 
 STATUS_VALUES = (
     "Aktif",
@@ -328,6 +329,8 @@ def member_to_dict(m: Member, include_photos=True, include_positions=True) -> di
     out = {}
     for col, camel in MEMBER_FIELDS.items():
         v = getattr(m, col)
+        if col in HEAVY_COLS and v:
+            v = resolve_stored_image_url(v)
         if not include_photos and col in HEAVY_COLS:
             # Jika berupa URL fisik WebP ringkas (< 500 byte), tetap sertakan
             if v and isinstance(v, str) and not v.startswith("data:image/") and len(v) < 500:

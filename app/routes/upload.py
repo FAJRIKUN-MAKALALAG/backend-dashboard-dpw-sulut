@@ -23,13 +23,42 @@ def serve_uploaded_file(category: str, filename: str):
     target_dir = os.path.join(UPLOADS_DIR, cat)
     full_path = os.path.join(target_dir, filename)
     if not os.path.exists(full_path):
-        logger.warning(f"[UPLOAD-SERVE-404] Berkas foto {cat} tidak ditemukan: {filename} di {target_dir}")
-        resp = Response(b"", status=404, mimetype="image/webp")
-        resp.headers["Access-Control-Allow-Origin"] = "*"
-        resp.headers["Cross-Origin-Resource-Policy"] = "cross-origin"
-        resp.headers["X-Content-Type-Options"] = "nosniff"
-        resp.headers["Cache-Control"] = "public, max-age=300"
-        return resp
+        # Fallback cerdas: jika nama file berformat {nik}_{cat}_{hash}.webp dan hash di DB berbeda
+        # dengan berkas fisik di disk, cari berkas dengan prefix {nik}_{cat}_ yang tersedia.
+        prefix_match = None
+        marker = f"_{cat}_"
+        if marker in filename and os.path.isdir(target_dir):
+            prefix = filename.split(marker)[0] + marker
+            try:
+                candidates = [
+                    f
+                    for f in os.listdir(target_dir)
+                    if f.startswith(prefix)
+                    and f.endswith(".webp")
+                    and os.path.isfile(os.path.join(target_dir, f))
+                ]
+                if candidates:
+                    candidates.sort(
+                        key=lambda f: os.path.getmtime(os.path.join(target_dir, f)),
+                        reverse=True,
+                    )
+                    prefix_match = candidates[0]
+            except OSError:
+                prefix_match = None
+
+        if prefix_match:
+            logger.info(
+                f"[UPLOAD-SERVE-FALLBACK] {filename} dialihkan ke berkas fisik yang tersedia: {prefix_match}"
+            )
+            filename = prefix_match
+        else:
+            logger.warning(f"[UPLOAD-SERVE-404] Berkas foto {cat} tidak ditemukan: {filename} di {target_dir}")
+            resp = Response(b"", status=404, mimetype="image/webp")
+            resp.headers["Access-Control-Allow-Origin"] = "*"
+            resp.headers["Cross-Origin-Resource-Policy"] = "cross-origin"
+            resp.headers["X-Content-Type-Options"] = "nosniff"
+            resp.headers["Cache-Control"] = "public, max-age=300"
+            return resp
 
     # Cache browser 7 hari untuk efisiensi loading + header CORP & CORS
     resp = send_from_directory(target_dir, filename, max_age=86400 * 7)
