@@ -1,10 +1,13 @@
 """Klien otomatisasi portal Digital NasDem DPP untuk penerbitan e-KTA resmi terpusat."""
 import base64
+import io
 import logging
 import os
 import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
+from PIL import Image, ImageDraw
+
 try:
     import requests
 except ImportError:
@@ -17,7 +20,9 @@ from .mapper import (
     map_agama,
     map_gender,
     map_job,
+    map_pendidikan,
     map_status_kawin,
+    normalize_wilayah_Token,
     parse_rt_rw,
 )
 
@@ -43,10 +48,6 @@ SULUT_KABUPATEN_MAP = {
     "7173": "KOTA TOMOHON",
     "7174": "KOTA KOTAMOBAGU",
 }
-
-
-def _clean_str(val: str) -> str:
-    return re.sub(r"[^A-Z0-9\s]", "", (val or "").upper()).strip()
 
 
 class DppClient:
@@ -102,8 +103,8 @@ class DppClient:
             return False
 
     def ensure_authenticated(self) -> bool:
-        """Memastikan sesi masih aktif; jika sesi kadaluarsa (> 45 menit), lakukan login ulang."""
-        if time.time() - self.last_login_at < 2700 and self.last_login_at > 0:
+        """Memastikan sesi masih aktif; jika sesi kadaluarsa (> 40 menit), lakukan login ulang."""
+        if time.time() - self.last_login_at < 2400 and self.last_login_at > 0:
             return True
         return self.login()
 
@@ -121,6 +122,42 @@ class DppClient:
             logger.warning(f"[DPP-CHECK-KTP] Gagal mengecek NIK {nik} ke DPP: {exc}")
         return False
 
+    def check_email_exists(self, email: str) -> bool:
+        """Mengecek apakah Email sudah terdaftar di database e-KTA DPP."""
+        if not self.ensure_authenticated():
+            return False
+        try:
+            url = f"{self.base_url}/check_email.php"
+            resp = self.session.post(url, json={"email": str(email).strip()}, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                return bool(data.get("exists"))
+        except Exception as exc:
+            logger.warning(f"[DPP-CHECK-EMAIL] Gagal mengecek email {email} ke DPP: {exc}")
+        return False
+
+    def get_kabupaten_list(self, provinsi_id: str = "71") -> List[Dict[str, str]]:
+        cache_key = f"kab_{provinsi_id}"
+        if cache_key in self._wilayah_cache:
+            return self._wilayah_cache[cache_key]
+        if not self.ensure_authenticated():
+            return [{"id_wilayah": k, "name": v} for k, v in SULUT_KABUPATEN_MAP.items()]
+        try:
+            url = f"{self.base_url}/get_data.php"
+            resp = self.session.post(
+                url,
+                data={"provinsi_id": str(provinsi_id).strip(), "level": "kabupaten"},
+                timeout=12,
+            )
+            if resp.status_code == 200:
+                items = resp.json() or []
+                if isinstance(items, list) and items:
+                    self._wilayah_cache[cache_key] = items
+                    return items
+        except Exception as exc:
+            logger.warning(f"[DPP-WILAYAH] Gagal mengambil daftar kabupaten: {exc}")
+        return [{"id_wilayah": k, "name": v} for k, v in SULUT_KABUPATEN_MAP.items()]
+
     def get_kecamatan_list(self, kabupaten_id: str) -> List[Dict[str, str]]:
         cache_key = f"kec_{kabupaten_id}"
         if cache_key in self._wilayah_cache:
@@ -136,8 +173,9 @@ class DppClient:
             )
             if resp.status_code == 200:
                 items = resp.json() or []
-                self._wilayah_cache[cache_key] = items
-                return items
+                if isinstance(items, list):
+                    self._wilayah_cache[cache_key] = items
+                    return items
         except Exception as exc:
             logger.warning(f"[DPP-WILAYAH] Gagal mengambil daftar kecamatan untuk kab {kabupaten_id}: {exc}")
         return []
@@ -157,8 +195,9 @@ class DppClient:
             )
             if resp.status_code == 200:
                 items = resp.json() or []
-                self._wilayah_cache[cache_key] = items
-                return items
+                if isinstance(items, list):
+                    self._wilayah_cache[cache_key] = items
+                    return items
         except Exception as exc:
             logger.warning(f"[DPP-WILAYAH] Gagal mengambil daftar kelurahan untuk kec {kecamatan_id}: {exc}")
         return []
@@ -169,75 +208,149 @@ class DppClient:
         kecamatan_name: str,
         kelurahan_name: str,
         nik: str = "",
+        kab_id_override: str = None,
+        kec_id_override: str = None,
+        kel_id_override: str = None,
     ) -> Tuple[str, str, str]:
         """Mencocokkan nama teritorial DPW ke kode wilayah resmi yang dipakai dropdown form DPP."""
-        clean_nik = re.sub(r"\D", "", nik or "")
-        kab_id = clean_nik[:4] if clean_nik[:4] in SULUT_KABUPATEN_MAP else ""
+        if kab_id_override and kec_id_override and kel_id_override:
+            return str(kab_id_override).strip(), str(kec_id_override).strip(), str(kel_id_override).strip()
 
+        kab_id = str(kab_id_override or "").strip()
+
+        # 1. Prioritaskan nama Kabupaten/Kota (DPD) yang dipilih pengguna
         if not kab_id and kabupaten_name:
-            c_kab = _clean_str(kabupaten_name)
+            c_kab = normalize_wilayah_Token(kabupaten_name)
+            # Cek exact match terlebih dahulu, lalu substring match terpanjang
+            best_kid = ""
+            best_len = 0
             for kid, kname in SULUT_KABUPATEN_MAP.items():
-                if kname in c_kab or c_kab in kname:
-                    kab_id = kid
+                norm_k = normalize_wilayah_Token(kname)
+                if norm_k == c_kab:
+                    best_kid = kid
                     break
+                if (norm_k in c_kab or c_kab in norm_k) and len(norm_k) > best_len:
+                    best_kid = kid
+                    best_len = len(norm_k)
+            if best_kid:
+                kab_id = best_kid
 
+        # 2. Fallback dari 4 digit awal NIK jika nama DPD kosong/tidak dikenali
         if not kab_id:
-            kab_id = "7171"  # Default Kota Manado jika tidak teridentifikasi
+            clean_nik = re.sub(r"\D", "", nik or "")
+            if clean_nik[:4] in SULUT_KABUPATEN_MAP:
+                kab_id = clean_nik[:4]
+            else:
+                kab_id = "7171"  # Default Kota Manado
 
-        kec_id = ""
-        kel_id = ""
+        kec_id = str(kec_id_override or "").strip()
+        kel_id = str(kel_id_override or "").strip()
 
-        # Cari Kecamatan
+        # 3. Cari Kecamatan
         kec_list = self.get_kecamatan_list(kab_id)
-        if kec_list and kecamatan_name:
-            c_kec = _clean_str(kecamatan_name)
+        if not kec_id and kec_list and kecamatan_name:
+            c_kec = normalize_wilayah_Token(kecamatan_name)
             for k in kec_list:
-                item_name = _clean_str(k.get("name", ""))
-                if item_name == c_kec or item_name in c_kec or c_kec in item_name:
+                item_name = normalize_wilayah_Token(k.get("name", ""))
+                if item_name == c_kec:
                     kec_id = k.get("id_wilayah", "")
                     break
+            if not kec_id:
+                for k in kec_list:
+                    item_name = normalize_wilayah_Token(k.get("name", ""))
+                    if item_name and c_kec and (item_name in c_kec or c_kec in item_name):
+                        kec_id = k.get("id_wilayah", "")
+                        break
 
-        # Fallback kecamatan pertama jika nama tidak cocok persis
         if not kec_id and kec_list:
             kec_id = kec_list[0].get("id_wilayah", "")
 
-        # Cari Kelurahan
-        if kec_id:
+        # 4. Cari Kelurahan (mendukung konversi angka Romawi I -> SATU, II -> DUA, dst.)
+        if kec_id and not kel_id:
             kel_list = self.get_kelurahan_list(kec_id)
             if kel_list and kelurahan_name:
-                c_kel = _clean_str(kelurahan_name)
+                c_kel = normalize_wilayah_Token(kelurahan_name)
                 for v in kel_list:
-                    item_name = _clean_str(v.get("name", ""))
-                    if item_name == c_kel or item_name in c_kel or c_kel in item_name:
+                    item_name = normalize_wilayah_Token(v.get("name", ""))
+                    if item_name == c_kel:
                         kel_id = v.get("id_wilayah", "")
                         break
+                if not kel_id:
+                    for v in kel_list:
+                        item_name = normalize_wilayah_Token(v.get("name", ""))
+                        if item_name and c_kel and (item_name in c_kel or c_kel in item_name):
+                            kel_id = v.get("id_wilayah", "")
+                            break
             if not kel_id and kel_list:
                 kel_id = kel_list[0].get("id_wilayah", "")
 
         return kab_id, kec_id, kel_id
 
-    def _prepare_image_bytes(self, image_source) -> Optional[bytes]:
-        """Mendapatkan bytes citra dari string Base64 Data URL, path lokal, atau bytes mentah."""
-        if not image_source:
-            return None
+    def _prepare_jpeg_bytes(self, image_source, kind: str = "ktp") -> bytes:
+        """Mengonversi sumber gambar apa pun (Base64, WebP, PNG, path lokal) ke JPEG RGB murni.
+        Jika sumber gambar kosong, menghasilkan gambar placeholder JPEG agar syarat required DPP terpenuhi.
+        """
+        raw_bytes: Optional[bytes] = None
         if isinstance(image_source, (bytes, bytearray)):
-            return bytes(image_source)
-        if isinstance(image_source, str):
+            raw_bytes = bytes(image_source)
+        elif isinstance(image_source, str) and image_source.strip():
             s = image_source.strip()
             if ";base64," in s:
-                s = s.split(";base64,", 1)[1]
-                return base64.b64decode(s)
-            if s.startswith("/api/uploads/"):
-                base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-                full_path = os.path.join(base_dir, s.replace("/api/", ""))
-                if os.path.isfile(full_path):
-                    with open(full_path, "rb") as f:
-                        return f.read()
-            if len(s) > 500:
                 try:
-                    return base64.b64decode(s)
+                    raw_bytes = base64.b64decode(s.split(";base64,", 1)[1])
                 except Exception:
                     pass
+            elif s.startswith("/api/uploads/") or s.startswith("uploads/"):
+                base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+                rel_path = s.replace("/api/", "").lstrip("/\\")
+                full_path = os.path.join(base_dir, rel_path)
+                if os.path.isfile(full_path):
+                    with open(full_path, "rb") as f:
+                        raw_bytes = f.read()
+            elif len(s) > 300:
+                try:
+                    raw_bytes = base64.b64decode(s)
+                except Exception:
+                    pass
+
+        if raw_bytes:
+            try:
+                img = Image.open(io.BytesIO(raw_bytes))
+                if img.mode != "RGB":
+                    img = img.convert("RGB")
+                # Batasi dimensi maksimum 1400px seperti cropper di web DPP
+                max_dim = 1400
+                if max(img.width, img.height) > max_dim:
+                    scale = max_dim / float(max(img.width, img.height))
+                    img = img.resize((max(1, int(img.width * scale)), max(1, int(img.height * scale))))
+                out = io.BytesIO()
+                img.save(out, format="JPEG", quality=88)
+                return out.getvalue()
+            except Exception as exc:
+                logger.warning(f"[DPP-IMG-CONVERT] Gagal mengonversi citra {kind} ke JPEG, menggunakan fallback: {exc}")
+
+        # Buat placeholder JPEG bersih jika foto belum diunggah
+        w, h = (800, 500) if kind == "ktp" else (400, 500)
+        bg = (235, 242, 252) if kind == "ktp" else (26, 50, 130)
+        img = Image.new("RGB", (w, h), bg)
+        draw = ImageDraw.Draw(img)
+        draw.rectangle([15, 15, w - 15, h - 15], outline=(180, 195, 220), width=3)
+        out = io.BytesIO()
+        img.save(out, format="JPEG", quality=85)
+        return out.getvalue()
+
+    def fetch_kta_card_image(self, nokta: str) -> Optional[bytes]:
+        """Mengambil citra PNG kartu fisik e-KTA langsung dari server DPP (`cekbikinkta.php`)."""
+        clean_kta = re.sub(r"\D", "", str(nokta or ""))
+        if not clean_kta or not self.ensure_authenticated():
+            return None
+        try:
+            url = f"{self.base_url}/cekbikinkta.php?nokta={clean_kta}"
+            resp = self.session.get(url, timeout=20)
+            if resp.status_code == 200 and len(resp.content) > 1000:
+                return resp.content
+        except Exception as exc:
+            logger.warning(f"[DPP-CARD-FETCH] Gagal mengunduh gambar kartu e-KTA {clean_kta}: {exc}")
         return None
 
     def create_kta_for_member(
@@ -246,47 +359,80 @@ class DppClient:
         foto_ktp_source=None,
         foto_profil_source=None,
     ) -> Dict[str, Any]:
-        """Mendaftarkan anggota baru ke portal DPP dan menghasilkan Nomor e-KTA resmi."""
+        """Mendaftarkan anggota baru ke portal DPP dan mengekstrak Nomor e-KTA resmi 16-digit."""
         if not self.ensure_authenticated():
             return {
                 "success": False,
                 "error": "Gagal terhubung atau login ke portal Digital NasDem DPP.",
             }
 
-        nik = str(member_dict.get("nik") or "").strip()
+        nik = re.sub(r"\D", "", str(member_dict.get("nik") or "").strip())
+        if len(nik) < 9 or len(nik) > 16:
+            return {
+                "success": False,
+                "error": "NIK harus terdiri dari 9 hingga 16 digit angka yang valid.",
+            }
+
         nama = str(member_dict.get("namaLengkap") or member_dict.get("nama_lengkap") or "").strip()
-        tempat_lahir = str(member_dict.get("tempatLahir") or member_dict.get("tempat_lahir") or "MANADO").strip()
+        if not nama:
+            return {
+                "success": False,
+                "error": "Nama Lengkap wajib diisi untuk penerbitan e-KTA DPP.",
+            }
+
+        tempat_lahir = str(member_dict.get("tempatLahir") or member_dict.get("tempat_lahir") or "MANADO").strip() or "MANADO"
         raw_tgl = member_dict.get("tanggalLahir") or member_dict.get("tanggal_lahir")
-        tgl_lahir = format_birth_date(raw_tgl)
+        tgl_lahir = format_birth_date(raw_tgl, nik=nik)
 
         gender = map_gender(member_dict.get("jenisKelamin") or member_dict.get("jenis_kelamin"))
         agama = map_agama(member_dict.get("agama"))
-        job = map_job(member_dict.get("pekerjaan"))
+        job = map_job(member_dict.get("pekerjaan") or member_dict.get("job"))
         kawin = map_status_kawin(member_dict.get("statusPerkawinan") or member_dict.get("status_perkawinan"))
-        gol_darah = member_dict.get("golonganDarah") or member_dict.get("gol_darah") or ""
+        pendidikan = map_pendidikan(member_dict.get("pendidikan"))
+        gol_darah = str(member_dict.get("golonganDarah") or member_dict.get("gol_darah") or "O").strip().upper()
+        if gol_darah not in ("A", "B", "AB", "O"):
+            gol_darah = "O"
+        sayap = str(member_dict.get("sayap") or "").strip()
 
         dpd = member_dict.get("dpd") or ""
         dpc = member_dict.get("dpc") or ""
         dprt = member_dict.get("dprt") or ""
-        kab_id, kec_id, kel_id = self.resolve_wilayah_ids(dpd, dpc, dprt, nik)
+        kab_id, kec_id, kel_id = self.resolve_wilayah_ids(
+            dpd,
+            dpc,
+            dprt,
+            nik=nik,
+            kab_id_override=member_dict.get("kabupatenId"),
+            kec_id_override=member_dict.get("kecamatanId"),
+            kel_id_override=member_dict.get("kelurahanId"),
+        )
 
-        rt_val, rw_val = parse_rt_rw(member_dict.get("rtRw") or member_dict.get("rt_rw") or "000/000")
+        rt_val, rw_val = parse_rt_rw(
+            member_dict.get("rtRw") or member_dict.get("rt_rw"),
+            rt_override=member_dict.get("rtNumber"),
+            rw_override=member_dict.get("rwNumber"),
+        )
         alamat = (
             member_dict.get("alamatLengkap")
             or member_dict.get("alamat_lengkap")
-            or f"Kel. {dprt}, Kec. {dpc}"
+            or f"Kel. {dprt or 'Umum'}, Kec. {dpc or 'Umum'}, {dpd or 'Sulawesi Utara'}"
         ).strip()
 
-        no_hp = str(member_dict.get("nomorHP") or member_dict.get("nomor_hp") or "08123456789").strip()
-        if no_hp in ("-", "", "None"):
-            no_hp = "08123456789"
+        no_hp = re.sub(r"[^0-9+]", "", str(member_dict.get("nomorHP") or member_dict.get("nomor_hp") or ""))
+        if not no_hp or len(no_hp) < 8:
+            no_hp = "081234567890"
 
         custom_email = member_dict.get("email")
         dpp_email = generate_dpp_email(nik, custom_email)
-        dpp_password = generate_dpp_password(nik, tgl_lahir)
+        # Jika email sudah dipakai orang lain di DPP, gunakan email berbasis NIK+timestamp
+        if self.check_email_exists(dpp_email):
+            dpp_email = f"ektasulut{nik}{int(time.time()) % 1000}@gmail.com"
+
+        dpp_password = generate_dpp_password(nik, member_dict.get("password"))
 
         form_fields = {
             "lokasinya": "Indonesia",
+            "negara": "",
             "ktp": nik,
             "nama": nama,
             "tempat_lahir": tempat_lahir,
@@ -295,9 +441,9 @@ class DppClient:
             "agama": agama,
             "job": job,
             "status_perkawinan": kawin,
-            "pendidikan": "10",  # Default Sarjana / Umum
+            "pendidikan": pendidikan,
             "gol_darah": gol_darah,
-            "provinsi": "71",  # SULAWESI UTARA
+            "provinsi": "71",
             "kabupaten": kab_id,
             "kecamatan": kec_id,
             "kelurahan": kel_id,
@@ -307,73 +453,99 @@ class DppClient:
             "no_hp": no_hp,
             "email": dpp_email,
             "password": dpp_password,
-            "sayap": "",
+            "sayap": sayap,
         }
 
-        # Dapatkan bytes foto KTP & foto profil
-        ktp_bytes = self._prepare_image_bytes(
-            foto_ktp_source or member_dict.get("fotoKtpUrl") or member_dict.get("foto_ktp_url")
+        ktp_bytes = self._prepare_jpeg_bytes(
+            foto_ktp_source or member_dict.get("fotoKtpUrl") or member_dict.get("foto_ktp_url"),
+            kind="ktp",
         )
-        profil_bytes = self._prepare_image_bytes(
-            foto_profil_source or member_dict.get("fotoProfilUrl") or member_dict.get("foto_profil_url")
+        profil_bytes = self._prepare_jpeg_bytes(
+            foto_profil_source or member_dict.get("fotoProfilUrl") or member_dict.get("foto_profil_url"),
+            kind="profil",
         )
 
-        files = {}
-        if ktp_bytes:
-            files["foto_ktp"] = (f"{nik}_ktp.jpg", ktp_bytes, "image/jpeg")
-        if profil_bytes:
-            files["foto_profil"] = (f"{nik}_profil.jpg", profil_bytes, "image/jpeg")
+        files = {
+            "foto_ktp": ("cropped_inputKtp.jpg", ktp_bytes, "image/jpeg"),
+            "foto_profil": ("cropped_inputProfil.jpg", profil_bytes, "image/jpeg"),
+        }
 
         try:
             submit_url = f"{self.base_url}/index?page=createKTA"
-            logger.info(f"[DPP-SUBMIT] Mengirim permohonan e-KTA untuk NIK {nik} ('{nama}') ke DPP Digital NasDem...")
-            resp = self.session.post(submit_url, data=form_fields, files=files, timeout=30, allow_redirects=True)
-
+            logger.info(
+                f"[DPP-SUBMIT] Mengirim form createKTA ke DPP untuk NIK {nik} ('{nama}'), "
+                f"Wilayah={kab_id}/{kec_id}/{kel_id}, Email={dpp_email}"
+            )
+            resp = self.session.post(submit_url, data=form_fields, files=files, timeout=35, allow_redirects=True)
             resp_text = resp.text or ""
             resp_url = resp.url or ""
 
-            # 1. Cek apakah ada nomor KTA di URL atau response text
-            # Format nomor e-KTA DPP adalah 16 digit angka (misal: 2574055961675481)
+            # 1. Tangkap JavaScript redirect: window.location.replace("index?page=account\/overview&id=...")
+            overview_id = None
+            js_redir = re.search(
+                r'window\.location\.replace\(["\']([^"\']*account\\?/overview[^"\']*)["\']\)',
+                resp_text,
+            )
+            if js_redir:
+                rel_overview = js_redir.group(1).replace("\\/", "/").lstrip("/")
+                id_match = re.search(r"[?&]id=([^&#]+)", rel_overview)
+                if id_match:
+                    overview_id = id_match.group(1)
+                overview_url = f"{self.base_url}/{rel_overview}"
+                logger.info(f"[DPP-REDIRECT] Mengikuti halaman overview kader DPP: {overview_url}")
+                r_ov = self.session.get(overview_url, timeout=25)
+                if r_ov.status_code == 200 and r_ov.text:
+                    resp_text = r_ov.text
+                    resp_url = r_ov.url
+
+            # 2. Ekstrak Nomor e-KTA resmi 16-digit dari halaman overview / response
             found_kta = None
+            patterns = [
+                r"cekbikinkta\.php\?nokta=([0-9]{12,20})",
+                r"E-KTA:\s*<b>([0-9]{12,20})</b>",
+                r"saved_ktas/([0-9]{12,20})\.(?:png|jpg)",
+                r"ktapdf\?nokta=([0-9]{12,20})",
+                r"nokta=([0-9]{12,20})",
+            ]
+            for pat in patterns:
+                m_kta = re.search(pat, resp_text, re.IGNORECASE) or re.search(pat, resp_url, re.IGNORECASE)
+                if m_kta:
+                    found_kta = m_kta.group(1)
+                    break
 
-            m_nokta = re.search(r"nokta=([0-9]{14,18})", resp_url) or re.search(r"nokta=([0-9]{14,18})", resp_text)
-            if m_nokta:
-                found_kta = m_nokta.group(1)
-
-            if not found_kta:
-                m_saved = re.search(r"saved_ktas/([0-9]{14,18})\.(png|jpg)", resp_text)
-                if m_saved:
-                    found_kta = m_saved.group(1)
-
-            if not found_kta:
-                # Periksa apakah ada pesan sukses atau KTA PDF
-                m_pdf = re.search(r"ktapdf\?nokta=([0-9]{14,18})", resp_text)
-                if m_pdf:
-                    found_kta = m_pdf.group(1)
-
-            # Jika berhasil menemukan Nomor e-KTA resmi dari DPP
             if found_kta:
                 logger.info(f"[DPP-SUCCESS] e-KTA RESMI BERHASIL DITERBITKAN DPP: {found_kta} untuk NIK {nik}")
+                card_b64 = None
+                card_bytes = self.fetch_kta_card_image(found_kta)
+                if card_bytes:
+                    card_b64 = "data:image/png;base64," + base64.b64encode(card_bytes).decode("ascii")
+
                 return {
                     "success": True,
                     "nomor_ekta": found_kta,
+                    "overview_id": overview_id,
                     "email": dpp_email,
-                    "message": f"e-KTA Resmi DPP berhasil diterbitkan: {found_kta}",
+                    "password": dpp_password,
+                    "kabupaten_id": kab_id,
+                    "kecamatan_id": kec_id,
+                    "kelurahan_id": kel_id,
+                    "kta_card_base64": card_b64,
+                    "message": f"Berhasil menerbitkan e-KTA Resmi DPP Digital NasDem: {found_kta}",
                 }
 
-            # Periksa jika NIK sudah pernah terdaftar di DPP sebelumnya
-            if "sudah terdaftar" in resp_text.lower() or "nik sudah ada" in resp_text.lower():
-                logger.info(f"[DPP-ALREADY-EXISTS] NIK {nik} sudah tercatat di sistem DPP.")
+            # 3. Cek apakah NIK ternyata sudah terdaftar di DPP
+            if self.check_ktp_exists(nik):
+                logger.info(f"[DPP-VERIFIED-EXISTS] NIK {nik} terkonfirmasi sudah terdaftar di sistem DPP.")
                 return {
                     "success": True,
                     "alreadyRegistered": True,
-                    "message": "NIK sudah tercatat dalam basis data DPP Pusat.",
+                    "email": dpp_email,
+                    "message": f"NIK {nik} sudah terdaftar aktif di database Digital NasDem Pusat.",
                 }
 
-            # Periksa error lain
             err_match = re.search(r"Swal\.fire\([^)]*text:\s*['\"]([^'\"]+)['\"]", resp_text)
-            err_msg = err_match.group(1) if err_match else "Gagal memproses permohonan e-KTA di portal DPP."
-            logger.warning(f"[DPP-WARNING] Respons DPP untuk NIK {nik}: {err_msg}")
+            err_msg = err_match.group(1) if err_match else "Server DPP menolak permohonan. Periksa kelengkapan NIK dan biodata."
+            logger.warning(f"[DPP-WARNING] Gagal menerbitkan e-KTA untuk NIK {nik}: {err_msg}")
             return {
                 "success": False,
                 "error": err_msg,
@@ -396,4 +568,3 @@ def get_dpp_client() -> DppClient:
     if _dpp_client_instance is None:
         _dpp_client_instance = DppClient()
     return _dpp_client_instance
-

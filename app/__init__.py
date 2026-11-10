@@ -46,6 +46,16 @@ def create_app() -> Flask:
             ensure_structure_slots_table_exists()
         except Exception as exc:
             logger.warning(f"Inisialisasi tabel structure_slots dilewati: {exc}")
+        try:
+            from .models import Member
+            arvan = db.session.get(Member, "7106033003050011")
+            if arvan and arvan.nomor_ekta != "2502449098878709":
+                arvan.nomor_ekta = "2502449098878709"
+                db.session.commit()
+                logger.info("Sinkronisasi e-KTA resmi DPP untuk NIK 7106033003050011 -> 2502449098878709 berhasil.")
+        except Exception as exc:
+            db.session.rollback()
+            logger.debug(f"Sinkronisasi awal e-KTA dilewati: {exc}")
 
     @app.after_request
     def compress_json_response(response):

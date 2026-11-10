@@ -228,28 +228,6 @@ def create_member():
         m.positions.append(Position(**pos))
     db.session.add(m)
 
-    # Otomatisasi Penerbitan e-KTA Resmi DPP Digital NasDem jika diaktifkan
-    dpp_result = None
-    should_register_dpp = raw_payload.get("autoRegisterDpp", True)
-    if should_register_dpp:
-        try:
-            dpp_client = get_dpp_client()
-            if dpp_client.is_configured():
-                current_app.logger.info(f"[DPP-TRIGGER] Memulai permohonan e-KTA resmi ke DPP untuk NIK {nik}...")
-                dpp_res = dpp_client.create_kta_for_member(
-                    member_dict=values,
-                    foto_ktp_source=values.get("foto_ktp_url"),
-                    foto_profil_source=values.get("foto_profil_url"),
-                )
-                dpp_result = dpp_res
-                if dpp_res.get("success") and dpp_res.get("nomor_ekta"):
-                    m.nomor_ekta = dpp_res["nomor_ekta"]
-                    current_app.logger.info(
-                        f"[DPP-KTA-LINKED] NIK {nik} sukses dikaitkan dengan e-KTA resmi DPP: {dpp_res['nomor_ekta']}"
-                    )
-        except Exception as exc:
-            current_app.logger.warning(f"[DPP-AUTO-REGISTER-FAILED] Gagal menerbitkan e-KTA DPP: {exc}")
-
     _audit(nik, m.nama_lengkap, "CREATE", "Registrasi anggota baru", claims.get("adminName"), m.dpd)
     db.session.commit()
     invalidate_all_data_cache()
@@ -258,10 +236,7 @@ def create_member():
             f"[DB-PHOTO-SAVED] Registrasi anggota '{m.nama_lengkap}' (NIK: {m.nik}) berhasil tersimpan dengan foto di database: "
             f"Profil: {m.foto_profil_url or '-'} | KTP: {m.foto_ktp_url or '-'}"
         )
-    resp_data = member_to_dict(m)
-    if dpp_result:
-        resp_data["dppResult"] = dpp_result
-    return jsonify(resp_data), 201
+    return jsonify(member_to_dict(m)), 201
 
 
 @bp.put("/members/<nik>")
