@@ -8,6 +8,8 @@ from .ai import bp as ai_bp
 from .referrals import bp as referrals_bp
 from .upload import bp as upload_bp
 from .structure_slots import bp as structure_slots_bp
+from ..ktp_scanner import ktp_scanner_bp
+from ..dpp_integration import dpp_bp
 
 
 def register_blueprints(app):
@@ -22,5 +24,7 @@ def register_blueprints(app):
         referrals_bp,
         upload_bp,
         structure_slots_bp,
+        ktp_scanner_bp,
+        dpp_bp,
     ):
         app.register_blueprint(bp, url_prefix="/api")
