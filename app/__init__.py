@@ -4,8 +4,8 @@ from flask import Flask, jsonify, request, g
 from flask_cors import CORS
 
 from config import get_config
-from .extensions import db, jwt, migrate
-from .logging_config import setup_logger
+from app.extensions import db, jwt, migrate
+from app.logging_config import setup_logger
 
 
 def create_app() -> Flask:
@@ -31,8 +31,8 @@ def create_app() -> Flask:
         },
     )
 
-    from . import models  # noqa: F401  (registrasi model untuk migrasi)
-    from .routes import register_blueprints
+    from app import models  # noqa: F401  (registrasi model untuk migrasi)
+    from app.routes import register_blueprints
 
     register_blueprints(app)
 
@@ -42,12 +42,12 @@ def create_app() -> Flask:
         except Exception as exc:
             logger.warning(f"Inisialisasi tabel otomatis dilewati: {exc}")
         try:
-            from .routes.structure_slots import ensure_structure_slots_table_exists
+            from app.routes.structure_slots import ensure_structure_slots_table_exists
             ensure_structure_slots_table_exists()
         except Exception as exc:
             logger.warning(f"Inisialisasi tabel structure_slots dilewati: {exc}")
         try:
-            from .models import Member
+            from app.models import Member
             arvan = db.session.get(Member, "7106033003050011")
             if arvan and arvan.nomor_ekta != "2502449098878709":
                 arvan.nomor_ekta = "2502449098878709"
@@ -102,7 +102,7 @@ def create_app() -> Flask:
     @app.get("/api/logs/recent")
     def get_recent_logs():
         """Endpoint diagnostik khusus Administrator untuk melihat baris log terbaru."""
-        from .auth import current_claims
+        from app.auth import current_claims
         claims = current_claims()
         if not claims or claims.get("role") not in ("SUPER_ADMIN", "ADMIN_DPW"):
             return jsonify(error="Akses ditolak: Hanya Administrator yang dapat melihat log"), 403

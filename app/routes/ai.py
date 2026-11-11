@@ -11,7 +11,7 @@ import urllib.request
 
 from flask import Blueprint, jsonify, request
 
-from ..auth import login_required
+from app.auth import login_required
 
 bp = Blueprint("ai", __name__)
 

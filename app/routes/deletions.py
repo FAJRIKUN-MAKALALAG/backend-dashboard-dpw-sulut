@@ -2,11 +2,11 @@ from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
 
-from ..auth import current_claims, login_required, roles_required
-from ..cache import get_or_compute, invalidate_all_data_cache
-from ..extensions import db
-from ..models import AuditLog, DeletionRequest, Member, Position
-from ..utils import apply_scope, in_scope, row_to_dict
+from app.auth import current_claims, login_required, roles_required
+from app.cache import get_or_compute, invalidate_all_data_cache
+from app.extensions import db
+from app.models import AuditLog, DeletionRequest, Member, Position
+from app.utils import apply_scope, in_scope, row_to_dict
 
 bp = Blueprint("deletions", __name__)
 

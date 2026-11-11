@@ -1,0 +1,13 @@
+{
+  "include": [
+    "app",
+    "scripts",
+    "config.py",
+    "wsgi.py"
+  ],
+  "extraPaths": [
+    "."
+  ],
+  "venvPath": ".",
+  "venv": "venv"
+}

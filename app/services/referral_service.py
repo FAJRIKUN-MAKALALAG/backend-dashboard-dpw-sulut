@@ -9,8 +9,8 @@ Sesuai Aturan Resmi:
 import random
 import string
 from sqlalchemy import func, or_
-from ..extensions import db
-from ..models import Member, AppUser, Position
+from app.extensions import db
+from app.models import Member, AppUser, Position
 
 
 def is_ketua_position(jabatan: str) -> bool:

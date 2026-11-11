@@ -13,7 +13,7 @@ import time
 from collections import OrderedDict
 from typing import Any, Callable
 
-from .utils import is_global
+from app.utils import is_global
 
 MAX_CACHE_ENTRIES = 512
 

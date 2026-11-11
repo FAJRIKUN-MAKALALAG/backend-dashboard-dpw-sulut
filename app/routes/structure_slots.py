@@ -8,12 +8,12 @@ import re
 from flask import Blueprint, jsonify, request
 from sqlalchemy.orm import selectinload
 
-from ..auth import current_claims, login_required
-from ..cache import invalidate_all_data_cache
-from ..extensions import db
-from ..models import Member, Position, StructureSlot
-from ..services.structure_templates import get_structure_template, make_slot_id
-from ..utils import in_scope, make_position_id, refresh_member_summary
+from app.auth import current_claims, login_required
+from app.cache import invalidate_all_data_cache
+from app.extensions import db
+from app.models import Member, Position, StructureSlot
+from app.services.structure_templates import get_structure_template, make_slot_id
+from app.utils import in_scope, make_position_id, refresh_member_summary
 
 bp = Blueprint("structure_slots", __name__)
 

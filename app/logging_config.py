@@ -106,7 +106,7 @@ def get_sanitized_request_body():
 def get_current_actor():
     """Mendapatkan identitas user/role yang sedang melakukan request (jika ada)."""
     try:
-        from .auth import current_claims
+        from app.auth import current_claims
         claims = current_claims()
         if claims and isinstance(claims, dict):
             role = claims.get("role", "UNKNOWN")

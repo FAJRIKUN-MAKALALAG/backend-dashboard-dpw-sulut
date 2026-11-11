@@ -3,7 +3,7 @@ import uuid
 from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import UUID
 
-from .extensions import db
+from app.extensions import db
 
 
 def _uuid():

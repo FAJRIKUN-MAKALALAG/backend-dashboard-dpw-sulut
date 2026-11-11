@@ -3,11 +3,11 @@ from flask_jwt_extended import create_access_token
 from sqlalchemy import func
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from ..auth import current_claims, login_required
-from ..cache import invalidate_all_data_cache
-from ..extensions import db
-from ..models import AppUser, Member, Position
-from ..utils import find_member_by_nik_or_incomplete_match, rename_member_nik_safely
+from app.auth import current_claims, login_required
+from app.cache import invalidate_all_data_cache
+from app.extensions import db
+from app.models import AppUser, Member, Position
+from app.utils import find_member_by_nik_or_incomplete_match, rename_member_nik_safely
 
 bp = Blueprint("auth", __name__)
 

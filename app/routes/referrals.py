@@ -2,15 +2,15 @@ from datetime import datetime, timezone
 from flask import Blueprint, jsonify, request
 from sqlalchemy import func, desc, or_
 
-from ..auth import current_claims, login_required
-from ..extensions import db
-from ..models import Member, AppUser
-from ..services.referral_service import (
+from app.auth import current_claims, login_required
+from app.extensions import db
+from app.models import Member, AppUser
+from app.services.referral_service import (
     find_direct_leader,
     generate_unique_referral_code,
     is_ketua_position,
 )
-from ..utils import member_to_dict
+from app.utils import member_to_dict
 
 bp = Blueprint("referrals", __name__)
 

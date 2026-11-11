@@ -4,11 +4,11 @@ from datetime import date, timedelta
 from flask import Blueprint, jsonify, request
 from sqlalchemy import case, func
 
-from ..auth import current_claims, login_required
-from ..cache import get_or_compute
-from ..extensions import db
-from ..models import Member
-from ..utils import apply_scope, sanitize_date
+from app.auth import current_claims, login_required
+from app.cache import get_or_compute
+from app.extensions import db
+from app.models import Member
+from app.utils import apply_scope, sanitize_date
 
 bp = Blueprint("stats", __name__)
 

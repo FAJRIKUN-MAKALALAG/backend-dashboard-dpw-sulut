@@ -2,11 +2,11 @@ from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, jsonify, request
 
-from ..auth import current_claims, login_required
-from ..cache import get_or_compute, invalidate_all_data_cache
-from ..extensions import db
-from ..models import AuditLog
-from ..utils import apply_scope, row_to_dict
+from app.auth import current_claims, login_required
+from app.cache import get_or_compute, invalidate_all_data_cache
+from app.extensions import db
+from app.models import AuditLog
+from app.utils import apply_scope, row_to_dict
 
 bp = Blueprint("audit", __name__)
 

@@ -2,7 +2,7 @@
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from .sulut_regions_ref import (
+from app.ktp_scanner.sulut_regions_ref import (
     SULUT_NIK_PREFIX_TO_DPD,
     decode_nik_info,
     heal_nik_with_cross_fields,

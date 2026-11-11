@@ -13,7 +13,7 @@ try:
 except ImportError:
     requests = None
 
-from .mapper import (
+from app.dpp_integration.mapper import (
     format_birth_date,
     generate_dpp_email,
     generate_dpp_password,

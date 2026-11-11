@@ -2,8 +2,8 @@
 import logging
 import os
 from flask import Blueprint, jsonify, request, send_from_directory, Response
-from ..auth import login_required, current_claims
-from ..services.image_storage import UPLOADS_DIR, optimize_and_save_image
+from app.auth import login_required, current_claims
+from app.services.image_storage import UPLOADS_DIR, optimize_and_save_image
 
 bp = Blueprint("upload", __name__)
 logger = logging.getLogger("nasdem.upload")

@@ -3,14 +3,14 @@ from sqlalchemy import func, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import defer, selectinload
 
-from ..auth import current_claims, login_required, super_admin_required
-from ..cache import get_or_compute, invalidate_all_data_cache
-from ..extensions import db
-from ..models import AppUser, AuditLog, Member, Position
-from ..services.referral_service import find_direct_leader
-from ..services.image_storage import intercept_and_store_member_photos, delete_physical_image
-from ..dpp_integration import get_dpp_client
-from ..utils import (
+from app.auth import current_claims, login_required, super_admin_required
+from app.cache import get_or_compute, invalidate_all_data_cache
+from app.extensions import db
+from app.models import AppUser, AuditLog, Member, Position
+from app.services.referral_service import find_direct_leader
+from app.services.image_storage import intercept_and_store_member_photos, delete_physical_image
+from app.dpp_integration import get_dpp_client
+from app.utils import (
     HEAVY_COLS,
     POSITION_COLS,
     STATUS_VALUES,

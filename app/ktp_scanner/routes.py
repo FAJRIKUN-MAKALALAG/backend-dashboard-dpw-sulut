@@ -1,8 +1,8 @@
 """Endpoint REST API pemindaian e-KTP berbasis Deep Learning RapidOCR (ONNX)."""
 import logging
 from flask import Blueprint, jsonify, request
-from ..auth import login_required
-from .ocr_engine import scan_ktp_image_with_rapidocr
+from app.auth import login_required
+from app.ktp_scanner.ocr_engine import scan_ktp_image_with_rapidocr
 
 bp = Blueprint("ktp_scanner", __name__)
 logger = logging.getLogger("nasdem.ktp_scanner")

@@ -1,10 +1,10 @@
 from flask import Blueprint, current_app, jsonify, request
 from werkzeug.security import generate_password_hash
 
-from ..auth import super_admin_required
-from ..extensions import db
-from ..models import AppUser
-from ..utils import row_to_dict
+from app.auth import super_admin_required
+from app.extensions import db
+from app.models import AppUser
+from app.utils import row_to_dict
 
 bp = Blueprint("users", __name__)
 

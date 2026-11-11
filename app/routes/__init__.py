@@ -1,15 +1,15 @@
-from .auth_routes import bp as auth_bp
-from .members import bp as members_bp
-from .audit import bp as audit_bp
-from .deletions import bp as deletions_bp
-from .users import bp as users_bp
-from .stats import bp as stats_bp
-from .ai import bp as ai_bp
-from .referrals import bp as referrals_bp
-from .upload import bp as upload_bp
-from .structure_slots import bp as structure_slots_bp
-from ..ktp_scanner import ktp_scanner_bp
-from ..dpp_integration import dpp_bp
+from app.routes.auth_routes import bp as auth_bp
+from app.routes.members import bp as members_bp
+from app.routes.audit import bp as audit_bp
+from app.routes.deletions import bp as deletions_bp
+from app.routes.users import bp as users_bp
+from app.routes.stats import bp as stats_bp
+from app.routes.ai import bp as ai_bp
+from app.routes.referrals import bp as referrals_bp
+from app.routes.upload import bp as upload_bp
+from app.routes.structure_slots import bp as structure_slots_bp
+from app.ktp_scanner import ktp_scanner_bp
+from app.dpp_integration import dpp_bp
 
 
 def register_blueprints(app):

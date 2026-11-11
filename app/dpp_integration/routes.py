@@ -2,13 +2,13 @@
 import logging
 import re
 from flask import Blueprint, Response, jsonify, request
-from ..auth import login_required, current_claims
-from ..cache import invalidate_all_data_cache
-from ..models import AuditLog, Member
-from ..extensions import db
-from ..services.image_storage import intercept_and_store_member_photos
-from ..utils import payload_to_member_values, member_to_dict
-from .client import get_dpp_client
+from app.auth import login_required, current_claims
+from app.cache import invalidate_all_data_cache
+from app.models import AuditLog, Member
+from app.extensions import db
+from app.services.image_storage import intercept_and_store_member_photos
+from app.utils import payload_to_member_values, member_to_dict
+from app.dpp_integration.client import get_dpp_client
 
 bp = Blueprint("dpp", __name__)
 logger = logging.getLogger("nasdem.dpp")

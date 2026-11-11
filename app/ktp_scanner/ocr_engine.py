@@ -3,8 +3,8 @@ import logging
 import time
 from typing import Any, Dict
 
-from .image_preprocessor import preprocess_ktp_for_rapidocr
-from .spatial_parser import parse_ktp_spatial_data
+from app.ktp_scanner.image_preprocessor import preprocess_ktp_for_rapidocr
+from app.ktp_scanner.spatial_parser import parse_ktp_spatial_data
 
 logger = logging.getLogger("nasdem.ktp_scanner")
 
