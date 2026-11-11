@@ -1,12 +1,21 @@
 """Pra-pemrosesan citra e-KTP menggunakan OpenCV (CLAHE, Cyan Suppression, Auto-Rotate, dan Zonal Cropping)."""
+from __future__ import annotations
+
 import base64
-from typing import Dict, Tuple
-import cv2
-import numpy as np
+from typing import Any, Dict, Tuple
+
+try:
+    import cv2
+    import numpy as np
+except Exception:
+    cv2 = None  # type: ignore
+    np = None  # type: ignore
 
 
-def decode_image_to_bgr(image_source) -> np.ndarray:
+def decode_image_to_bgr(image_source) -> Any:
     """Mendekode string Base64 Data URI atau bytes menjadi matriks BGR OpenCV."""
+    if cv2 is None or np is None:
+        raise RuntimeError("Modul opencv-python-headless / numpy belum terpasang di server.")
     if isinstance(image_source, str):
         raw_str = image_source.strip()
         if ";base64," in raw_str:

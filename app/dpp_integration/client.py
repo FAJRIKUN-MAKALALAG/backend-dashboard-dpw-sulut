@@ -1,10 +1,15 @@
 """Klien otomatisasi portal Digital NasDem DPP untuk penerbitan e-KTA resmi terpusat."""
 import base64
+import http.cookiejar
 import io
+import json
 import logging
 import os
 import re
 import time
+import urllib.parse
+import urllib.request
+import uuid
 from typing import Any, Dict, List, Optional, Tuple
 try:
     from PIL import Image, ImageDraw
@@ -16,6 +21,74 @@ try:
     import requests
 except ImportError:
     requests = None
+
+
+class _StdlibResponse:
+    def __init__(self, status_code: int, content: bytes, url: str):
+        self.status_code = status_code
+        self.content = content
+        self.url = url
+        self.text = content.decode("utf-8", errors="replace")
+
+    def json(self):
+        return json.loads(self.text)
+
+
+class _StdlibSession:
+    """Fallback HTTP session berbasis library bawaan Python (urllib + CookieJar) jika 'requests' belum terpasang di Docker VPS."""
+
+    def __init__(self):
+        self.cj = http.cookiejar.CookieJar()
+        self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.cj))
+        self.headers: Dict[str, str] = {}
+
+    def get(self, url: str, timeout: int = 20) -> _StdlibResponse:
+        req = urllib.request.Request(url, headers=dict(self.headers), method="GET")
+        with self.opener.open(req, timeout=timeout) as resp:
+            return _StdlibResponse(resp.getcode(), resp.read(), resp.geturl())
+
+    def post(
+        self,
+        url: str,
+        data: Optional[Dict[str, Any]] = None,
+        json_body: Optional[Dict[str, Any]] = None,
+        files: Optional[Dict[str, Tuple[str, bytes, str]]] = None,
+        timeout: int = 25,
+        allow_redirects: bool = True,
+        **kwargs,
+    ) -> _StdlibResponse:
+        if "json" in kwargs and json_body is None:
+            json_body = kwargs["json"]
+        hdrs = dict(self.headers)
+        body_bytes = b""
+
+        if files:
+            boundary = f"----WebKitFormBoundary{uuid.uuid4().hex}"
+            hdrs["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+            parts: List[bytes] = []
+            for k, v in (data or {}).items():
+                parts.append(
+                    f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n".encode("utf-8")
+                )
+            for field_name, (filename, file_bytes, mime_type) in files.items():
+                header = (
+                    f"--{boundary}\r\n"
+                    f"Content-Disposition: form-data; name=\"{field_name}\"; filename=\"{filename}\"\r\n"
+                    f"Content-Type: {mime_type}\r\n\r\n"
+                ).encode("utf-8")
+                parts.append(header + file_bytes + b"\r\n")
+            parts.append(f"--{boundary}--\r\n".encode("utf-8"))
+            body_bytes = b"".join(parts)
+        elif json_body is not None:
+            hdrs["Content-Type"] = "application/json"
+            body_bytes = json.dumps(json_body).encode("utf-8")
+        elif data is not None:
+            hdrs["Content-Type"] = "application/x-www-form-urlencoded"
+            body_bytes = urllib.parse.urlencode(data).encode("utf-8")
+
+        req = urllib.request.Request(url, data=body_bytes, headers=hdrs, method="POST")
+        with self.opener.open(req, timeout=timeout) as resp:
+            return _StdlibResponse(resp.getcode(), resp.read(), resp.geturl())
 
 from app.dpp_integration.mapper import (
     format_birth_date,
@@ -63,18 +136,18 @@ class DppClient:
         self.password = os.getenv("DPP_ADMIN_PASSWORD", "NasDem2029")
         if requests:
             self.session = requests.Session()
-            self.session.headers.update(
-                {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-                }
-            )
         else:
-            self.session = None
+            self.session = _StdlibSession()
+        self.session.headers.update(
+            {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            }
+        )
         self.last_login_at: float = 0
         self._wilayah_cache: Dict[str, Any] = {}
 
     def is_configured(self) -> bool:
-        return bool(requests and self.email and self.password)
+        return bool(self.session and self.email and self.password)
 
     def login(self) -> bool:
         """Melakukan login ke portal DPP dan menyimpan session cookie."""
