@@ -6,7 +6,11 @@ import os
 import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
-from PIL import Image, ImageDraw
+try:
+    from PIL import Image, ImageDraw
+except ImportError:
+    Image = None
+    ImageDraw = None
 
 try:
     import requests
@@ -330,14 +334,16 @@ class DppClient:
                 logger.warning(f"[DPP-IMG-CONVERT] Gagal mengonversi citra {kind} ke JPEG, menggunakan fallback: {exc}")
 
         # Buat placeholder JPEG bersih jika foto belum diunggah
-        w, h = (800, 500) if kind == "ktp" else (400, 500)
-        bg = (235, 242, 252) if kind == "ktp" else (26, 50, 130)
-        img = Image.new("RGB", (w, h), bg)
-        draw = ImageDraw.Draw(img)
-        draw.rectangle([15, 15, w - 15, h - 15], outline=(180, 195, 220), width=3)
-        out = io.BytesIO()
-        img.save(out, format="JPEG", quality=85)
-        return out.getvalue()
+        if Image is not None and ImageDraw is not None:
+            w, h = (800, 500) if kind == "ktp" else (400, 500)
+            bg = (235, 242, 252) if kind == "ktp" else (26, 50, 130)
+            img = Image.new("RGB", (w, h), bg)
+            draw = ImageDraw.Draw(img)
+            draw.rectangle([15, 15, w - 15, h - 15], outline=(180, 195, 220), width=3)
+            out = io.BytesIO()
+            img.save(out, format="JPEG", quality=85)
+            return out.getvalue()
+        return raw_bytes or b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00`\x00`\x00\x00\xff\xd9"
 
     def fetch_kta_card_image(self, nokta: str) -> Optional[bytes]:
         """Mengambil citra PNG kartu fisik e-KTA langsung dari server DPP (`cekbikinkta.php`)."""

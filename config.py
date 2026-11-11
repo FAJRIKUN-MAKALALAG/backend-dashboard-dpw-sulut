@@ -38,7 +38,22 @@ class AppConfig(DatabaseConfig):
     SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-change-me")
     JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "dev-jwt-secret-change-me")
     _raw_cors = os.getenv("CORS_ORIGINS", "*")
-    CORS_ORIGINS = "*" if "*" in _raw_cors else [o.strip() for o in _raw_cors.split(",") if o.strip()]
+    if "*" in _raw_cors or not _raw_cors.strip():
+        CORS_ORIGINS = "*"
+    else:
+        _parsed_origins = [o.strip().rstrip("/") for o in _raw_cors.split(",") if o.strip()]
+        # Selalu izinkan domain production resmi NasDem Sulut meskipun .env di VPS masih berisi localhost
+        for _prod_origin in (
+            "https://digital.nasdemsulut.io",
+            "http://digital.nasdemsulut.io",
+            "https://nasdemsulut.io",
+            "https://www.nasdemsulut.io",
+            "http://localhost:5173",
+            "http://localhost:3000",
+        ):
+            if _prod_origin not in _parsed_origins:
+                _parsed_origins.append(_prod_origin)
+        CORS_ORIGINS = _parsed_origins
 
     MAX_PAGE_SIZE = _int("MAX_PAGE_SIZE", 500)
     BULK_CHUNK_SIZE = _int("BULK_CHUNK_SIZE", 1000)

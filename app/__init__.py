@@ -27,9 +27,28 @@ def create_app() -> Flask:
                 "origins": cors_origins,
                 "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
                 "allow_headers": ["Content-Type", "Authorization", "Accept", "X-Requested-With", "Origin"],
+                "supports_credentials": True,
             }
         },
     )
+
+    @app.before_request
+    def handle_cors_preflight():
+        """Menangani preflight OPTIONS lebih awal agar tidak pernah diblokir oleh auth/redirect/middleware."""
+        if request.method == "OPTIONS":
+            resp = app.make_default_options_response()
+            origin = request.headers.get("Origin") or "*"
+            resp.headers["Access-Control-Allow-Origin"] = origin
+            resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+            req_headers = request.headers.get("Access-Control-Request-Headers")
+            resp.headers["Access-Control-Allow-Headers"] = (
+                req_headers
+                if req_headers
+                else "Content-Type, Authorization, Accept, X-Requested-With, Origin"
+            )
+            resp.headers["Access-Control-Allow-Credentials"] = "true"
+            resp.headers["Access-Control-Max-Age"] = "86400"
+            return resp, 200
 
     from app import models  # noqa: F401  (registrasi model untuk migrasi)
     from app.routes import register_blueprints
@@ -58,8 +77,29 @@ def create_app() -> Flask:
             logger.debug(f"Sinkronisasi awal e-KTA dilewati: {exc}")
 
     @app.after_request
-    def compress_json_response(response):
-        """Kompresi Gzip otomatis (~85% lebih hemat bandwidth) untuk respons JSON berukuran >= 1 KB."""
+    def ensure_cors_and_compress(response):
+        """Memastikan header CORS selalu terpasang (termasuk saat 4xx/5xx) & mengompresi JSON >= 1 KB."""
+        origin = request.headers.get("Origin")
+        if origin:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+            vary_hdr = response.headers.get("Vary", "")
+            if "Origin" not in vary_hdr:
+                response.headers["Vary"] = f"{vary_hdr}, Origin".lstrip(", ")
+        else:
+            response.headers.setdefault("Access-Control-Allow-Origin", "*")
+
+        response.headers.setdefault(
+            "Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+        )
+        req_headers = request.headers.get("Access-Control-Request-Headers")
+        response.headers.setdefault(
+            "Access-Control-Allow-Headers",
+            req_headers
+            if req_headers
+            else "Content-Type, Authorization, Accept, X-Requested-With, Origin",
+        )
+
         if (
             response.direct_passthrough
             or response.status_code < 200
