@@ -37,6 +37,16 @@ class DatabaseConfig:
 class AppConfig(DatabaseConfig):
     SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-change-me")
     JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "dev-jwt-secret-change-me")
+
+    # Masa berlaku session login (JWT Token).
+    # Default: 30 hari (720 jam) agar kader, pengurus wilayah, dan admin tidak sering ter-logout.
+    # Dapat diatur lewat JWT_ACCESS_DAYS atau JWT_ACCESS_HOURS di .env.
+    _jwt_days = _int("JWT_ACCESS_DAYS", 30)
+    _jwt_hours = _int("JWT_ACCESS_HOURS", 0)
+    if _jwt_hours > 0 and "JWT_ACCESS_DAYS" not in os.environ:
+        JWT_ACCESS_TOKEN_EXPIRES = timedelta(hours=max(_jwt_hours, 24))
+    else:
+        JWT_ACCESS_TOKEN_EXPIRES = timedelta(days=_jwt_days if _jwt_days > 0 else 30)
     _raw_cors = os.getenv("CORS_ORIGINS", "*")
     if "*" in _raw_cors or not _raw_cors.strip():
         CORS_ORIGINS = "*"

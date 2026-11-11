@@ -3,6 +3,7 @@ from flask_jwt_extended import create_access_token
 from sqlalchemy import func
 from werkzeug.security import check_password_hash, generate_password_hash
 
+from config import get_config
 from app.auth import current_claims, login_required
 from app.cache import invalidate_all_data_cache
 from app.extensions import db
@@ -218,7 +219,11 @@ def login():
             ), 401
 
         claims = claims_for(user)
-        token = create_access_token(identity=str(user.id), additional_claims=claims)
+        token = create_access_token(
+            identity=str(user.id),
+            additional_claims=claims,
+            expires_delta=get_config().JWT_ACCESS_TOKEN_EXPIRES,
+        )
         return jsonify(token=token, session=claims)
 
     # 2. Cari di tabel Member (termasuk pencocokan aman 16 digit NIK KTP ke NIK SK <16 digit)
@@ -255,7 +260,11 @@ def login():
         db.session.commit()
         refreshed_user = db.session.get(AppUser, target_user_id)
         claims = claims_for(refreshed_user)
-        token = create_access_token(identity=str(refreshed_user.id), additional_claims=claims)
+        token = create_access_token(
+            identity=str(refreshed_user.id),
+            additional_claims=claims,
+            expires_delta=get_config().JWT_ACCESS_TOKEN_EXPIRES,
+        )
         return jsonify(token=token, session=claims)
 
     # 3. Pengurus belum punya akun AppUser -> verifikasi default password
@@ -287,7 +296,11 @@ def login():
     db.session.commit()
 
     claims = claims_for(new_user)
-    token = create_access_token(identity=str(new_user.id), additional_claims=claims)
+    token = create_access_token(
+        identity=str(new_user.id),
+        additional_claims=claims,
+        expires_delta=get_config().JWT_ACCESS_TOKEN_EXPIRES,
+    )
     return jsonify(token=token, session=claims, isDefaultPassword=True)
 
 
@@ -392,12 +405,30 @@ def activate_pengurus():
     db.session.commit()
 
     claims = claims_for(user)
-    token = create_access_token(identity=str(user.id), additional_claims=claims)
+    token = create_access_token(
+        identity=str(user.id),
+        additional_claims=claims,
+        expires_delta=get_config().JWT_ACCESS_TOKEN_EXPIRES,
+    )
     return jsonify(
         token=token,
         session=claims,
         message=f"Akun pengurus berhasil diaktivasi untuk {member.nama_lengkap} ({member.jabatan})!",
     )
+
+
+@bp.post("/auth/refresh")
+@login_required
+def refresh_session():
+    """Memperpanjang masa aktif token sesi pengurus / admin."""
+    claims = current_claims()
+    ident = claims.get("sub") or claims.get("adminNik") or "user"
+    token = create_access_token(
+        identity=str(ident),
+        additional_claims=claims,
+        expires_delta=get_config().JWT_ACCESS_TOKEN_EXPIRES,
+    )
+    return jsonify(token=token, session=claims)
 
 
 @bp.get("/auth/me")
