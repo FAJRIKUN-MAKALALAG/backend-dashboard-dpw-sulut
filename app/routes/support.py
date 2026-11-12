@@ -9,16 +9,17 @@ from app.models import SupportMessage
 bp = Blueprint("support", __name__)
 
 
+def _get_recipient_name(rec_nik: str) -> str:
+    if not rec_nik or rec_nik == "ALL_DPW":
+        return "Tim Admin DPW Standby"
+    if rec_nik in ("7106033003050001", "master-superadmin-01", "SUPERADMINDPW"):
+        return "Super Administrator Utama DPW"
+    return f"Admin DPW ({rec_nik})"
+
+
 def _msg_to_dict(m: SupportMessage) -> dict:
     rec_nik = m.recipient_nik
-    rec_name = getattr(m, "recipient_name", None)
-    if not rec_name:
-        if not rec_nik or rec_nik == "ALL_DPW":
-            rec_name = "Tim Admin DPW Standby"
-        elif rec_nik in ("7106033003050001", "master-superadmin-01", "SUPERADMINDPW"):
-            rec_name = "Super Administrator Utama DPW"
-        else:
-            rec_name = f"Admin DPW ({rec_nik})"
+    rec_name = getattr(m, "recipient_name", None) or _get_recipient_name(rec_nik)
     return {
         "id": m.id,
         "threadId": m.thread_id,
@@ -98,16 +99,27 @@ def get_messages():
     req_thread = request.args.get("thread_id")
 
     if role == "SUPER_ADMIN":
-        target_thread = req_thread or user_nik
+        target_thread = req_thread or f"{user_nik}__ALL_DPW"
     else:
         # Pengurus membaca thread percakapan miliknya
-        target_thread = req_thread or user_nik
+        target_thread = req_thread or f"{user_nik}__ALL_DPW"
 
-    rows = (
-        SupportMessage.query.filter_by(thread_id=target_thread)
-        .order_by(SupportMessage.created_at.asc())
-        .all()
-    )
+    # Jika membaca thread default ALL_DPW, sertakan juga fallback legacy thread {user_nik}
+    if "__ALL_DPW" in target_thread:
+        base_nik = target_thread.split("__ALL_DPW")[0]
+        rows = (
+            SupportMessage.query.filter(
+                SupportMessage.thread_id.in_([target_thread, base_nik])
+            )
+            .order_by(SupportMessage.created_at.asc())
+            .all()
+        )
+    else:
+        rows = (
+            SupportMessage.query.filter_by(thread_id=target_thread)
+            .order_by(SupportMessage.created_at.asc())
+            .all()
+        )
     return jsonify([_msg_to_dict(r) for r in rows])
 
 
@@ -132,15 +144,15 @@ def send_message():
     category = data.get("category") or "UMUM"
 
     if role == "SUPER_ADMIN":
-        target_thread = data.get("threadId") or user_nik
+        target_thread = data.get("threadId") or f"{user_nik}__ALL_DPW"
         recipient_role = "PENGURUS"
         recipient_nik = data.get("recipientNik")
     else:
-        # Pengurus mengirim ke Super Admin / Admin DPW tertentu
-        target_thread = data.get("threadId") or user_nik
-        recipient_role = "SUPER_ADMIN"
+        # Pengurus mengirim ke Super Admin / Admin DPW tertentu (setiap admin punya room tersendiri)
         raw_rec = str(data.get("recipientNik") or "").strip()
         recipient_nik = raw_rec if (raw_rec and raw_rec != "ALL_DPW") else "ALL_DPW"
+        target_thread = data.get("threadId") or f"{user_nik}__{recipient_nik}"
+        recipient_role = "SUPER_ADMIN"
 
     msg = SupportMessage(
         id=msg_id,
@@ -190,6 +202,9 @@ def get_threads():
             1 for m in msgs if m.recipient_role == "SUPER_ADMIN" and not m.is_read
         )
 
+        rec_nik = last_m.recipient_nik
+        rec_name = getattr(last_m, "recipient_name", None) or _get_recipient_name(rec_nik)
+
         threads.append(
             {
                 "threadId": t_id,
@@ -203,8 +218,8 @@ def get_threads():
                 "lastMessage": last_m.message,
                 "lastMessageTime": last_m.created_at.isoformat() if last_m.created_at else None,
                 "category": last_m.category or "UMUM",
-                "recipientNik": last_m.recipient_nik,
-                "recipientName": getattr(last_m, "recipient_name", None),
+                "recipientNik": rec_nik or "ALL_DPW",
+                "recipientName": rec_name,
                 "unreadCount": unread_count,
             }
         )
@@ -234,4 +249,36 @@ def mark_read():
 
     db.session.commit()
     return jsonify(success=True)
+
+
+@bp.delete("/support/messages/<message_id>")
+@super_admin_required
+def delete_message(message_id: str):
+    """Menghapus satu pesan tertentu (khusus Super Admin)."""
+    msg = db.session.get(SupportMessage, message_id)
+    if not msg:
+        return jsonify(error="Pesan tidak ditemukan"), 404
+
+    thread_id = msg.thread_id
+    db.session.delete(msg)
+    db.session.commit()
+    return jsonify(success=True, messageId=message_id, threadId=thread_id), 200
+
+
+@bp.delete("/support/threads")
+@super_admin_required
+def delete_thread():
+    """Menghapus seluruh riwayat percakapan di suatu room chat (khusus Super Admin)."""
+    data = request.get_json(silent=True) or {}
+    thread_id = request.args.get("thread_id") or data.get("threadId") or data.get("thread_id")
+    if not thread_id:
+        return jsonify(error="Parameter thread_id wajib disertakan"), 400
+
+    deleted_count = SupportMessage.query.filter_by(thread_id=thread_id).delete()
+    if "__ALL_DPW" in thread_id:
+        base_nik = thread_id.split("__ALL_DPW")[0]
+        deleted_count += SupportMessage.query.filter_by(thread_id=base_nik).delete()
+
+    db.session.commit()
+    return jsonify(success=True, threadId=thread_id, deletedCount=deleted_count), 200
 

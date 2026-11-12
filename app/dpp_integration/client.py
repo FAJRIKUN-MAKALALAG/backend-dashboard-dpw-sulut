@@ -313,8 +313,6 @@ class DppClient:
                             key=lambda x: (int(x.get("active") or 0), int(x.get("id") or 0)),
                             reverse=True,
                         )[0]
-                    elif len(qsw_json["data"]) == 1:
-                        target_item = qsw_json["data"][0]
 
                     if target_item:
                         candidate_kta = str(target_item.get("ktaNumber") or "").strip()
@@ -338,19 +336,30 @@ class DppClient:
         except Exception as exc_qsw:
             logger.warning(f"[DPP-QSW-ERROR] Gagal memanggil quick_search_wilayah_ajax untuk {clean_nik}: {exc_qsw}")
 
-        # 2. Fallback: Cek melalui check_ktp.php
+        # 2. Fallback: Cek melalui check_ktp.php (API Nasional DPP Pusat)
+        # PENTING: check_ktp.php mewajibkan body JSON dan header Content-Type application/json.
+        # Jika dikirim format form x-www-form-urlencoded, PHP mengembalikan {'exists': true} secara default.
         try:
             url = f"{self.base_url}/check_ktp.php"
-            resp = self.session.post(url, data={"ktp": clean_nik}, timeout=12)
-            if resp.status_code != 200 or not resp.text:
-                resp = self.session.post(url, json={"ktp": clean_nik}, timeout=12)
+            resp = self.session.post(
+                url,
+                json={"ktp": clean_nik},
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+                timeout=12,
+            )
 
             if resp.status_code == 200:
                 logger.info(f"[DPP-CHECK-KTP-DETAIL] NIK={clean_nik} Status={resp.status_code} Resp={resp.text[:400]}")
                 data = resp.json() or {}
                 result["raw_data"] = data
-                if data.get("exists") or data.get("status") == "success":
+
+                # HANYA set exists=True jika API mengembalikan exists == True secara eksplisit
+                if data.get("exists") is True:
                     result["exists"] = True
+                else:
+                    # NIK terkonfirmasi BELUM terdaftar di DPP Pusat
+                    result["exists"] = False
+                    return result
 
                 # Ekstrak nomor e-KTA langsung jika dikembalikan API check_ktp
                 for k in ("nokta", "no_kta", "nomor_ekta", "kta", "nomorKTA", "noKta"):
