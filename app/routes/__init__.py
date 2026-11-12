@@ -10,6 +10,7 @@ from app.routes.upload import bp as upload_bp
 from app.routes.structure_slots import bp as structure_slots_bp
 from app.ktp_scanner import ktp_scanner_bp
 from app.dpp_integration import dpp_bp
+from app.routes.support import bp as support_bp
 
 
 def register_blueprints(app):
@@ -26,5 +27,6 @@ def register_blueprints(app):
         structure_slots_bp,
         ktp_scanner_bp,
         dpp_bp,
+        support_bp,
     ):
         app.register_blueprint(bp, url_prefix="/api")

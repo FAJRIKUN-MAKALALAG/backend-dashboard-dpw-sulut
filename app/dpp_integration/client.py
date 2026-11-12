@@ -171,6 +171,21 @@ class DppClient:
             if "overview" in r2.url or "createKTA" in r2.text or "Digital Siber" in r2.text:
                 self.last_login_at = time.time()
                 logger.info(f"[DPP-LOGIN-SUCCESS] Berhasil login sebagai Admin DPP: '{self.email}'")
+                try:
+                    log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "logs")
+                    os.makedirs(log_dir, exist_ok=True)
+                    with open(os.path.join(log_dir, "dpp_dashboard.html"), "w", encoding="utf-8") as f:
+                        f.write(r2.text)
+                    links = sorted(list(set(re.findall(r'href=["\'](index\?page=[^"\'#\s]+)["\']', r2.text))))
+                    logger.info(f"[DPP-MENU-LINKS] Daftar halaman di portal DPP: {links}")
+
+                    # Ambil juga halaman createKTA untuk mempelajari skrip form DPP
+                    r_kta = self.session.get(f"{self.base_url}/index?page=createKTA", timeout=15)
+                    if r_kta.status_code == 200:
+                        with open(os.path.join(log_dir, "dpp_createKTA.html"), "w", encoding="utf-8") as f_kta:
+                            f_kta.write(r_kta.text)
+                except Exception as ex_dbg:
+                    logger.debug(f"[DPP-DEBUG-DUMP] Gagal dump halaman portal: {ex_dbg}")
                 return True
             else:
                 logger.error(f"[DPP-LOGIN-FAILED] Gagal login ke portal DPP. Status: {r2.status_code}, URL: {r2.url}")
@@ -185,19 +200,228 @@ class DppClient:
             return True
         return self.login()
 
-    def check_ktp_exists(self, nik: str) -> bool:
-        """Mengecek apakah NIK sudah terdaftar di database e-KTA DPP."""
-        if not self.ensure_authenticated():
+    def _is_admin_identity(self, text: Optional[str]) -> bool:
+        """Mengecek apakah teks/nama/email mengindikasikan akun Admin DPP (Gabriela Senduk)."""
+        if not text:
             return False
+        lower = str(text).lower()
+        admin_tokens = [
+            "gabriela senduk",
+            "gabrielasenduk",
+            "gabrielasenduk01@gmail.com",
+            (self.email or "").lower(),
+        ]
+        return any(tok in lower for tok in admin_tokens if tok)
+
+    def _extract_kta_for_nik(self, html_text: str, nik: str = "", current_url: str = "") -> Optional[str]:
+        """Mengekstrak nomor e-KTA 14-18 digit resmi KHUSUS untuk NIK target dari HTML atau URL halaman DPP."""
+        if not html_text:
+            return None
+
+        clean_nik = re.sub(r"\D", "", str(nik or "").strip())
+
+        # 1. Tolak jika halaman adalah profil admin pribadi (page=account)
+        if "page=account" in current_url.lower() and "overview" not in current_url.lower():
+            logger.debug("[DPP-KTA-EXTRACT] Menolak halaman profil admin (page=account).")
+            return None
+
+        # 2. Jika NIK disediakan, NIK WAJIB ditemukan di dalam html_text atau current_url
+        if clean_nik and (clean_nik not in html_text and clean_nik not in current_url):
+            logger.debug(f"[DPP-KTA-EXTRACT] NIK {clean_nik} tidak ada dalam dokumen halaman, tolak ekstraksi.")
+            return None
+
+        # 3. Cari blok spesifik di sekitar NIK jika halaman berbentuk tabel/daftar
+        target_slices = []
+        if clean_nik:
+            for m in re.finditer(re.escape(clean_nik), html_text):
+                start = max(0, m.start() - 400)
+                end = min(len(html_text), m.end() + 400)
+                target_slices.append(html_text[start:end])
+
+        contexts_to_search = target_slices if target_slices else [html_text]
+
+        patterns = [
+            r"cekbikinkta\.php\?nokta=([0-9]{14,18})",
+            r"E-KTA:\s*<b>([0-9]{14,18})</b>",
+            r"saved_ktas/([0-9]{14,18})\.(?:png|jpg)",
+            r"ktapdf\?nokta=([0-9]{14,18})",
+            r"nokta=([0-9]{14,18})",
+            r"class=['\"][^'\"]*kta-number[^'\"]*['\"][^>]*>([0-9]{14,18})<",
+            r"id=['\"][^'\"]*nomorKta[^'\"]*['\"][^>]*>([0-9]{14,18})<",
+            r">\s*([0-9]{16})\s*<",
+        ]
+
+        for ctx in contexts_to_search:
+            for pat in patterns:
+                m = re.search(pat, ctx, re.IGNORECASE)
+                if m:
+                    cand = m.group(1).strip()
+                    if cand != clean_nik:
+                        return cand
+
+        for pat in patterns:
+            m_url = re.search(pat, current_url, re.IGNORECASE)
+            if m_url:
+                cand = m_url.group(1).strip()
+                if cand != clean_nik:
+                    return cand
+
+        return None
+
+    def _extract_kta_from_html(self, html_text: str, current_url: str = "") -> Optional[str]:
+        """Wrapper kompatibilitas mundur."""
+        return self._extract_kta_for_nik(html_text, "", current_url)
+
+    def find_existing_dpp_member(self, nik: str) -> Dict[str, Any]:
+        """Melakukan pengecekan dan pencarian data kader & nomor e-KTA resmi yang sudah ada di DPP."""
+        clean_nik = re.sub(r"\D", "", str(nik or "").strip())
+        if len(clean_nik) < 9:
+            return {"exists": False, "nomor_ekta": None}
+
+        if not self.ensure_authenticated():
+            return {"exists": False, "nomor_ekta": None, "error": "Koneksi ke DPP belum terautentikasi"}
+
+        result: Dict[str, Any] = {
+            "exists": False,
+            "nomor_ekta": None,
+            "nama": None,
+            "overview_id": None,
+            "foto_profil": None,
+            "foto_ktp": None,
+            "phone": None,
+            "wilayah_text": None,
+            "raw_data": None,
+        }
+
+        # 1. Prioritas Utama: Cari di ajax/quick_search_wilayah_ajax.php (Endpoint Resmi Pencarian Kader DPW)
+        try:
+            qsw_url = f"{self.base_url}/ajax/quick_search_wilayah_ajax.php"
+            resp_qsw = self.session.post(qsw_url, data={"keyword": clean_nik}, timeout=15)
+            if resp_qsw.status_code == 200:
+                qsw_json = resp_qsw.json() or {}
+                if qsw_json.get("success") and isinstance(qsw_json.get("data"), list) and qsw_json["data"]:
+                    # Cocokkan idCardNumber dengan clean_nik
+                    matching_items = [
+                        item for item in qsw_json["data"]
+                        if re.sub(r"\D", "", str(item.get("idCardNumber") or "")) == clean_nik
+                    ]
+                    target_item = None
+                    if matching_items:
+                        # Prioritaskan status active == 1 dan id terbaru (id tertinggi)
+                        target_item = sorted(
+                            matching_items,
+                            key=lambda x: (int(x.get("active") or 0), int(x.get("id") or 0)),
+                            reverse=True,
+                        )[0]
+                    elif len(qsw_json["data"]) == 1:
+                        target_item = qsw_json["data"][0]
+
+                    if target_item:
+                        candidate_kta = str(target_item.get("ktaNumber") or "").strip()
+                        candidate_name = str(target_item.get("name") or "").strip()
+
+                        if not self._is_admin_identity(candidate_name) and candidate_kta != clean_nik:
+                            result["exists"] = True
+                            result["nomor_ekta"] = candidate_kta
+                            result["nama"] = candidate_name
+                            result["overview_id"] = str(target_item.get("id") or "").strip()
+                            result["foto_profil"] = target_item.get("photo")
+                            result["foto_ktp"] = target_item.get("idCardPhoto")
+                            result["phone"] = target_item.get("phoneNumber")
+                            result["wilayah_text"] = target_item.get("wilayah_text")
+                            result["raw_data"] = target_item
+                            logger.info(
+                                f"[DPP-QSW-FOUND] Berhasil mendeteksi e-KTA resmi DPP untuk NIK {clean_nik}: "
+                                f"Nama='{candidate_name}', e-KTA='{candidate_kta}', ID={result['overview_id']}"
+                            )
+                            return result
+        except Exception as exc_qsw:
+            logger.warning(f"[DPP-QSW-ERROR] Gagal memanggil quick_search_wilayah_ajax untuk {clean_nik}: {exc_qsw}")
+
+        # 2. Fallback: Cek melalui check_ktp.php
         try:
             url = f"{self.base_url}/check_ktp.php"
-            resp = self.session.post(url, json={"ktp": str(nik).strip()}, timeout=10)
+            resp = self.session.post(url, data={"ktp": clean_nik}, timeout=12)
+            if resp.status_code != 200 or not resp.text:
+                resp = self.session.post(url, json={"ktp": clean_nik}, timeout=12)
+
             if resp.status_code == 200:
-                data = resp.json()
-                return bool(data.get("exists"))
+                logger.info(f"[DPP-CHECK-KTP-DETAIL] NIK={clean_nik} Status={resp.status_code} Resp={resp.text[:400]}")
+                data = resp.json() or {}
+                result["raw_data"] = data
+                if data.get("exists") or data.get("status") == "success":
+                    result["exists"] = True
+
+                # Ekstrak nomor e-KTA langsung jika dikembalikan API check_ktp
+                for k in ("nokta", "no_kta", "nomor_ekta", "kta", "nomorKTA", "noKta"):
+                    val = str(data.get(k) or (data.get("data", {}) if isinstance(data.get("data"), dict) else {}).get(k) or "").strip()
+                    if val and len(val) >= 12 and val != clean_nik:
+                        result["nomor_ekta"] = val
+                        break
+
+                for kname in ("nama", "name", "nama_lengkap", "namaLengkap"):
+                    val_nama = str(data.get(kname) or (data.get("data", {}) if isinstance(data.get("data"), dict) else {}).get(kname) or "").strip()
+                    if val_nama and not self._is_admin_identity(val_nama):
+                        result["nama"] = val_nama
+                        break
+
+                for kid in ("id", "user_id", "overview_id", "member_id"):
+                    val_id = str(data.get(kid) or (data.get("data", {}) if isinstance(data.get("data"), dict) else {}).get(kid) or "").strip()
+                    if val_id:
+                        result["overview_id"] = val_id
+                        break
         except Exception as exc:
-            logger.warning(f"[DPP-CHECK-KTP] Gagal mengecek NIK {nik} ke DPP: {exc}")
-        return False
+            logger.warning(f"[DPP-LOOKUP] Gagal memanggil check_ktp.php untuk {clean_nik}: {exc}")
+
+        # Jika sudah ditemukan nomor e-KTA dan exists=True, langsung kembalikan
+        if result["exists"] and result["nomor_ekta"]:
+            return result
+
+        # 2. Jika overview_id ditemukan dari check_ktp, buka halaman overview spesifik
+        if result.get("overview_id"):
+            try:
+                ov_url = f"{self.base_url}/index?page=account/overview&id={result['overview_id']}"
+                r_ov = self.session.get(ov_url, timeout=20)
+                if r_ov.status_code == 200 and r_ov.text:
+                    # Validasi ketat: halaman overview harus memuat NIK target dan bukan profil admin
+                    if clean_nik in r_ov.text and not self._is_admin_identity(r_ov.text):
+                        found_kta = self._extract_kta_for_nik(r_ov.text, clean_nik, r_ov.url)
+                        if found_kta:
+                            result["nomor_ekta"] = found_kta
+                            result["exists"] = True
+                            return result
+            except Exception as exc:
+                logger.warning(f"[DPP-LOOKUP-OVERVIEW] Gagal mengambil overview kader {result['overview_id']}: {exc}")
+
+        # 3. Jika exists=True tapi nomor e-KTA belum didapat, cari HANYA di halaman daftar kader resmi
+        # PERINGATAN: JANGAN panggil 'page=account' karena itu halaman profil admin yang sedang login!
+        if result["exists"]:
+            search_urls = [
+                f"{self.base_url}/index?page=dataKader&keyword={clean_nik}",
+                f"{self.base_url}/index?page=kta&q={clean_nik}",
+                f"{self.base_url}/index?page=kader&search={clean_nik}",
+                f"{self.base_url}/index?page=anggota&keyword={clean_nik}",
+            ]
+            for s_url in search_urls:
+                try:
+                    r_srch = self.session.get(s_url, timeout=15)
+                    if r_srch.status_code == 200 and r_srch.text:
+                        # Skip total jika NIK target tidak ada di halaman ini
+                        if clean_nik not in r_srch.text:
+                            continue
+                        found_kta = self._extract_kta_for_nik(r_srch.text, clean_nik, r_srch.url)
+                        if found_kta:
+                            result["nomor_ekta"] = found_kta
+                            break
+                except Exception as exc:
+                    logger.debug(f"[DPP-LOOKUP-SEARCH] Gagal pada {s_url}: {exc}")
+
+        return result
+
+    def check_ktp_exists(self, nik: str) -> bool:
+        """Mengecek apakah NIK sudah terdaftar di database e-KTA DPP."""
+        lookup = self.find_existing_dpp_member(nik)
+        return bool(lookup.get("exists"))
 
     def check_email_exists(self, email: str) -> bool:
         """Mengecek apakah Email sudah terdaftar di database e-KTA DPP."""
@@ -592,7 +816,7 @@ class DppClient:
                     found_kta = m_kta.group(1)
                     break
 
-            if found_kta:
+            if found_kta and not self._is_admin_identity(resp_text):
                 logger.info(f"[DPP-SUCCESS] e-KTA RESMI BERHASIL DITERBITKAN DPP: {found_kta} untuk NIK {nik}")
                 card_b64 = None
                 card_bytes = self.fetch_kta_card_image(found_kta)
@@ -613,13 +837,27 @@ class DppClient:
                 }
 
             # 3. Cek apakah NIK ternyata sudah terdaftar di DPP
-            if self.check_ktp_exists(nik):
+            dpp_lookup = self.find_existing_dpp_member(nik)
+            if dpp_lookup.get("exists") or self.check_ktp_exists(nik):
                 logger.info(f"[DPP-VERIFIED-EXISTS] NIK {nik} terkonfirmasi sudah terdaftar di sistem DPP.")
+                existing_kta = dpp_lookup.get("nomor_ekta")
+                card_b64 = None
+                if existing_kta:
+                    card_bytes = self.fetch_kta_card_image(existing_kta)
+                    if card_bytes:
+                        card_b64 = "data:image/png;base64," + base64.b64encode(card_bytes).decode("ascii")
+
                 return {
                     "success": True,
                     "alreadyRegistered": True,
+                    "nomor_ekta": existing_kta,
                     "email": dpp_email,
-                    "message": f"NIK {nik} sudah terdaftar aktif di database Digital NasDem Pusat.",
+                    "kta_card_base64": card_b64,
+                    "message": (
+                        f"NIK {nik} sudah terdaftar aktif di database DPP Pusat dengan nomor e-KTA {existing_kta}."
+                        if existing_kta
+                        else f"NIK {nik} sudah terdaftar aktif di database Digital NasDem Pusat."
+                    ),
                 }
 
             err_match = re.search(r"Swal\.fire\([^)]*text:\s*['\"]([^'\"]+)['\"]", resp_text)

@@ -197,3 +197,24 @@ class AppUser(db.Model):
     is_active = db.Column(db.Boolean, default=True)
     created_at = db.Column(db.DateTime(timezone=True), server_default=func.now())
     updated_at = db.Column(db.DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class SupportMessage(db.Model):
+    __tablename__ = "support_messages"
+
+    id = db.Column(db.String(50), primary_key=True)
+    thread_id = db.Column(db.String(50), nullable=False, index=True)
+    sender_nik = db.Column(db.String(50), nullable=False, index=True)
+    sender_name = db.Column(db.String(255), nullable=False)
+    sender_role = db.Column(db.String(50), nullable=False)
+    sender_dpd = db.Column(db.String(100))
+    sender_dpc = db.Column(db.String(100))
+    sender_dprt = db.Column(db.String(100))
+    sender_jabatan = db.Column(db.String(150))
+    recipient_role = db.Column(db.String(50), nullable=False, default="SUPER_ADMIN")
+    recipient_nik = db.Column(db.String(50))
+    category = db.Column(db.String(50), default="UMUM")
+    message = db.Column(db.Text, nullable=False)
+    attachment_url = db.Column(db.Text)
+    is_read = db.Column(db.Boolean, default=False, index=True)
+    created_at = db.Column(db.DateTime(timezone=True), server_default=func.now(), index=True)

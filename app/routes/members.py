@@ -220,6 +220,22 @@ def create_member():
     # Otomatis simpan foto Base64 ke berkas fisik WebP di disk server
     values = intercept_and_store_member_photos(values, nik)
 
+    # Jika nomor_ekta belum resmi (masih sama dengan NIK atau kosong),
+    # otomatis cek apakah NIK ini sudah memiliki e-KTA resmi di DPP Pusat:
+    if not values.get("nomor_ekta") or values.get("nomor_ekta") == nik:
+        try:
+            dpp_client = get_dpp_client()
+            dpp_info = dpp_client.find_existing_dpp_member(nik)
+            if dpp_info.get("nomor_ekta") and not dpp_client._is_admin_identity(dpp_info.get("nama")):
+                values["nomor_ekta"] = dpp_info["nomor_ekta"]
+                values["status_ktp_verified"] = True
+                current_app.logger.info(
+                    f"[AUTO-SYNC-EKTA] NIK {nik} terdeteksi sudah memiliki e-KTA resmi DPP: {dpp_info['nomor_ekta']}. "
+                    "Menetapkan nomor resmi ke data kader."
+                )
+        except Exception as exc:
+            current_app.logger.debug(f"[AUTO-SYNC-EKTA-SKIP] Skip auto-check DPP: {exc}")
+
     _apply_referral_and_leader(values)
     values["diubah_oleh"] = claims.get("adminName")
     pos = position_values_from_row(values)

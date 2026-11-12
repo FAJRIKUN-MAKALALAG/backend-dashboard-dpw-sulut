@@ -58,22 +58,156 @@ def get_dpp_wilayah():
 @bp.post("/dpp/check-ktp")
 @login_required
 def check_dpp_ktp():
-    """Mengecek apakah NIK sudah terdaftar di database pusat Digital NasDem DPP."""
+    """Mengecek apakah NIK sudah terdaftar di database pusat Digital NasDem DPP beserta nomor e-KTA resminya."""
     data = request.get_json(silent=True) or {}
     nik = re.sub(r"\D", "", str(data.get("nik") or ""))
     if len(nik) < 9:
         return jsonify(error="NIK tidak valid", exists=False), 400
 
     client = get_dpp_client()
-    exists_in_dpp = client.check_ktp_exists(nik)
+    dpp_info = client.find_existing_dpp_member(nik)
+    exists_in_dpp = bool(dpp_info.get("exists"))
+    nomor_ekta_dpp = dpp_info.get("nomor_ekta")
+    nama_dpp = dpp_info.get("nama")
+
+    # Filter identitas admin
+    if client._is_admin_identity(nama_dpp):
+        nama_dpp = None
+
     local_member = db.session.get(Member, nik)
 
     return jsonify(
         nik=nik,
         existsInDpp=exists_in_dpp,
+        nomorEktaDpp=nomor_ekta_dpp,
+        namaDpp=nama_dpp,
+        fotoProfilDpp=dpp_info.get("foto_profil"),
+        fotoKtpDpp=dpp_info.get("foto_ktp"),
+        phoneDpp=dpp_info.get("phone"),
+        wilayahTextDpp=dpp_info.get("wilayah_text"),
         existsInLocal=bool(local_member),
         localMember=member_to_dict(local_member) if local_member else None,
+        message=(
+            f"NIK sudah terdaftar di DPP Pusat dengan e-KTA Resmi: {nomor_ekta_dpp}"
+            if nomor_ekta_dpp
+            else (
+                "NIK sudah terdaftar di database Digital NasDem Pusat."
+                if exists_in_dpp
+                else "NIK belum terdaftar di DPP Pusat."
+            )
+        ),
     ), 200
+
+
+@bp.post("/dpp/sync-existing-kta")
+@login_required
+def sync_existing_kta():
+    """Menarik dan menyinkronkan e-KTA resmi dari DPP Pusat ke data profil di database PostgreSQL."""
+    claims = current_claims()
+    data = request.get_json(silent=True) or {}
+    raw_nik = str(data.get("nik") or "").strip()
+    clean_nik = re.sub(r"\D", "", raw_nik)
+    provided_ekta = re.sub(r"\D", "", str(data.get("nomorEkta") or "").strip())
+    input_nama = str(data.get("namaLengkap") or "").strip()
+
+    if len(clean_nik) < 9:
+        return jsonify(error="NIK wajib diisi dengan valid (9-16 digit)"), 400
+
+    client = get_dpp_client()
+    target_ekta = provided_ekta
+
+    # Jangan pernah terima nama milik admin Gabriela
+    if client._is_admin_identity(input_nama):
+        input_nama = ""
+
+    # Jika nomor e-KTA belum disediakan, cari otomatis ke server DPP
+    if not target_ekta:
+        dpp_info = client.find_existing_dpp_member(clean_nik)
+        target_ekta = dpp_info.get("nomor_ekta")
+        if not input_nama and dpp_info.get("nama") and not client._is_admin_identity(dpp_info.get("nama")):
+            input_nama = dpp_info.get("nama")
+
+    if not target_ekta:
+        return jsonify(
+            error="Nomor e-KTA resmi belum dapat dideteksi otomatis dari portal DPP. Silakan masukkan nomor e-KTA 16 digit Anda (contoh: 2574055961675481) untuk disinkronkan langsung.",
+            needsManualEkta=True,
+        ), 404
+
+    member = db.session.get(Member, clean_nik)
+    if member:
+        member.nomor_ekta = target_ekta
+        member.status_ktp_verified = True
+        # Perbaiki jika nama kader sebelumnya sempat tertimpa nama Gabriela
+        if input_nama and client._is_admin_identity(member.nama_lengkap):
+            member.nama_lengkap = input_nama
+        elif input_nama and not member.nama_lengkap:
+            member.nama_lengkap = input_nama
+
+        member.catatan_mutasi = (
+            (member.catatan_mutasi or "") + f" | Sinkron e-KTA Resmi DPP ({target_ekta})"
+        ).strip(" |")
+        db.session.add(
+            AuditLog(
+                member_nik=clean_nik,
+                member_name=member.nama_lengkap,
+                action="UPDATE",
+                new_status=member.status,
+                reason=f"Tarik & Sinkron e-KTA Resmi DPP Pusat ({target_ekta})",
+                actor=claims.get("adminName") or "Admin",
+                dpd=member.dpd,
+            )
+        )
+        db.session.commit()
+        invalidate_all_data_cache()
+        return jsonify(
+            success=True,
+            nomor_ekta=target_ekta,
+            member=member_to_dict(member),
+            message=f"Nomor e-KTA Resmi DPP ({target_ekta}) berhasil disinkronkan ke profil Anda!",
+        ), 200
+    else:
+        # Jika belum ada di tabel member, buat data baru di PostgreSQL
+        from app.utils import payload_to_member_values
+        nama = input_nama or f"Kader NasDem ({clean_nik})"
+        raw_vals = payload_to_member_values(
+            {
+                "nik": clean_nik,
+                "namaLengkap": nama,
+                "nomorEKTA": target_ekta,
+                "status": "Aktif",
+                "dpd": data.get("dpd") or "Kota Manado",
+                "dpc": data.get("dpc") or "Umum",
+                "dprt": data.get("dprt") or "Umum",
+                "isPengurus": False,
+                "tingkatKepengurusan": "Bukan Pengurus",
+                "jabatan": "Anggota Biasa",
+                "statusKtpVerified": True,
+                "catatanMutasi": f"Tarik & Sinkron e-KTA Resmi DPP Pusat ({target_ekta})",
+            }
+        )
+        raw_vals["diubah_oleh"] = claims.get("adminName") or "Admin"
+        raw_vals["nomor_ekta"] = target_ekta
+        new_m = Member(**raw_vals)
+        db.session.add(new_m)
+        db.session.add(
+            AuditLog(
+                member_nik=clean_nik,
+                member_name=new_m.nama_lengkap,
+                action="CREATE",
+                new_status="Aktif",
+                reason=f"Tarik & Sinkron e-KTA Resmi DPP Pusat ({target_ekta})",
+                actor=claims.get("adminName") or "Admin",
+                dpd=new_m.dpd,
+            )
+        )
+        db.session.commit()
+        invalidate_all_data_cache()
+        return jsonify(
+            success=True,
+            nomor_ekta=target_ekta,
+            member=member_to_dict(new_m),
+            message=f"Data kader dan Nomor e-KTA Resmi DPP ({target_ekta}) berhasil disimpan ke database!",
+        ), 200
 
 
 @bp.get("/dpp/kta-card/<nokta>")
@@ -144,6 +278,38 @@ def create_kta_endpoint():
     }
 
     client = get_dpp_client()
+
+    # Cegah duplikasi penerbitan jika NIK ternyata SUDAH MEMILIKI e-KTA di DPP Pusat
+    dpp_existing = client.find_existing_dpp_member(clean_nik)
+    if dpp_existing.get("exists") and dpp_existing.get("nomor_ekta"):
+        found_ekta = dpp_existing["nomor_ekta"]
+        logger.info(
+            f"[DPP-AUTO-SYNC] NIK {clean_nik} sudah terdaftar dengan e-KTA {found_ekta} di DPP. Menghindari duplikasi createKTA!"
+        )
+        if member:
+            member.nomor_ekta = found_ekta
+            member.status_ktp_verified = True
+            db.session.add(
+                AuditLog(
+                    member_nik=clean_nik,
+                    member_name=member.nama_lengkap,
+                    action="UPDATE",
+                    new_status=member.status,
+                    reason=f"Auto-Sync e-KTA Resmi dari DPP Pusat ({found_ekta})",
+                    actor=claims.get("adminName") or "Admin",
+                    dpd=member.dpd,
+                )
+            )
+            db.session.commit()
+            invalidate_all_data_cache()
+            return jsonify({
+                "success": True,
+                "alreadyRegistered": True,
+                "nomor_ekta": found_ekta,
+                "member": member_to_dict(member),
+                "message": f"NIK {clean_nik} sudah memiliki e-KTA Resmi di DPP Pusat ({found_ekta}). Berhasil disinkronkan langsung ke data diri Anda tanpa perlu bikin baru!",
+            }), 200
+
     result = client.create_kta_for_member(
         member_dict=merged_dict,
         foto_ktp_source=merged_dict.get("fotoKtpUrl"),
