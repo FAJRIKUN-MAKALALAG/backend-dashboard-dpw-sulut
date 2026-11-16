@@ -10,3 +10,6 @@ uploads/ktp/*
 !uploads/ktp/.gitkeep
 logs/*
 !logs/.gitkeep
+*ocr-ktp*.json
+*credentials*.json
+google-*.json

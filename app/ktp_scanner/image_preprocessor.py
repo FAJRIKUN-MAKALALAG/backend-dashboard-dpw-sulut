@@ -1,8 +1,8 @@
-"""Pra-pemrosesan citra e-KTP menggunakan OpenCV (CLAHE, Cyan Suppression, Auto-Rotate, dan Zonal Cropping)."""
+"""Pra-pemrosesan citra e-KTP menggunakan OpenCV (Red-Channel Cyan Suppression, Word Segmentation, & Zonal Cropping)."""
 from __future__ import annotations
 
 import base64
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Tuple
 
 try:
     import cv2
@@ -46,12 +46,95 @@ def encode_bgr_to_data_url(bgr: np.ndarray, mime: str = "image/jpeg", quality: i
     return f"data:{mime};base64,{b64}"
 
 
+def extract_red_channel_bgr(std_bgr: np.ndarray) -> np.ndarray:
+    """Mengekstrak Kanal Merah (Red Channel) murni sebagai BGR 3-channel.
+
+    Pada fisik e-KTP Indonesia, latar belakang gelombang biru/cyan memantulkan cahaya merah
+    hampir seterang warna putih, sedangkan teks huruf hitam menyerap cahaya merah.
+    Kanal merah murni menghilangkan garis gelombang biru yang sering memotong huruf Nama (misal G -> C, R -> IR).
+    """
+    _, _, r_ch = cv2.split(std_bgr)
+    r_bgr = cv2.cvtColor(r_ch, cv2.COLOR_GRAY2BGR)
+    target_h, target_w = std_bgr.shape[:2]
+    # Tutup hanya area tanda tangan di pojok kanan bawah
+    r_bgr[int(target_h * 0.65) :, int(target_w * 0.74) :] = 255
+    return r_bgr
+
+
+def segment_word_crops_from_line(
+    std_bgr: np.ndarray,
+    x1: int,
+    y1: int,
+    x2: int,
+    y2: int,
+) -> List[np.ndarray]:
+    """Memotong kotak nilai baris (seperti Nama Lengkap) menjadi potongan per-kata (word crops)
+    menggunakan morfologi penutupan horizontal pada Kanal Merah.
+
+    Hal ini mengatasi kelemahan model OCR yang sering menggabungkan kata tanpa spasi
+    (misal 'FAJRIKUNMAKALALAG' -> ['FAJRIKUN', 'MAKALALAG'], 'FELTYYUNITAFRANS' -> ['FELTY', 'YUNITA', 'FRANS']).
+    """
+    h, w = std_bgr.shape[:2]
+    _, _, r_ch = cv2.split(std_bgr)
+
+    cy1 = max(0, y1 - 4)
+    cy2 = min(h, y2 + 4)
+    cx1 = max(0, x1 - 4)
+    cx2 = min(w, x2 + 6)
+    crop_r = r_ch[cy1:cy2, cx1:cx2]
+    if crop_r.size == 0 or crop_r.shape[0] < 10 or crop_r.shape[1] < 20:
+        return []
+
+    _, bw = cv2.threshold(crop_r, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    # Kernel horizontal 9x5 menyatukan huruf-huruf di dalam 1 kata, namun tetap memisahkan antar-kata (jarak >= 10px)
+    k_word = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 5))
+    closed = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, k_word)
+
+    cnts, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    word_boxes = []
+    for c in cnts:
+        wx, wy, ww, wh = cv2.boundingRect(c)
+        if ww >= 15 and wh >= 11:
+            word_boxes.append((wx, wy, ww, wh))
+
+    if not word_boxes:
+        return []
+
+    word_boxes.sort(key=lambda b: b[0])
+    bg_val = int(np.median(crop_r))
+    crops: List[np.ndarray] = []
+
+    for wx, wy, ww, wh in word_boxes:
+        w_slice = crop_r[:, max(0, wx - 3) : min(crop_r.shape[1], wx + ww + 3)]
+        w_pad = cv2.copyMakeBorder(
+            w_slice, 8, 8, 10, 10, cv2.BORDER_CONSTANT, value=bg_val
+        )
+        crops.append(cv2.cvtColor(w_pad, cv2.COLOR_GRAY2BGR))
+
+    return crops
+
+
+def crop_direct_nik_line(std_bgr: np.ndarray, y1: int, y2: int) -> np.ndarray:
+    """Memotong jalur penuh 16 digit NIK pada Kanal Merah untuk dibaca langsung oleh Recognizer
+    tanpa melalui DBNet Detector (mencegah digit tengah NIK terputus/hilang).
+    """
+    h, w = std_bgr.shape[:2]
+    _, _, r_ch = cv2.split(std_bgr)
+    ny1 = max(0, y1 - 10)
+    ny2 = min(h, y2 + 10)
+    nx1 = int(w * 0.22)
+    nx2 = int(w * 0.70)
+    nik_line = r_ch[ny1:ny2, nx1:nx2]
+    nik_clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(4, 4)).apply(nik_line)
+    return cv2.cvtColor(nik_clahe, cv2.COLOR_GRAY2BGR)
+
+
 def preprocess_ktp_for_rapidocr(image_source) -> Tuple[np.ndarray, np.ndarray, str, str, Dict]:
-    """Menstandarkan citra e-KTP dan menyiapkan matriks optimal bagi RapidOCR (PP-OCRv4).
+    """Menstandarkan citra e-KTP dan menyiapkan matriks optimal bagi RapidOCR & Google Document AI.
 
     Returns:
-      - `ocr_main_img`: Citra utama 1400x884 yang dipertajam dengan CLAHE & area pasfoto di-masking.
-      - `ocr_nik_strip`: Citra khusus area baris NIK yang diperbesar 1.8x dengan penghapusan latar cyan.
+      - `ocr_main_img`: Citra standar 1400x884 BGR alami (tanpa distorsi rotasi palsu atau over-sharpening).
+      - `ocr_nik_strip`: Citra khusus area baris NIK yang diperbesar 1.75x dengan penghapusan latar cyan.
       - `standardized_ktp_data_url`: Data URL gambar e-KTP standar warna.
       - `cropped_face_data_url`: Data URL potongan pasfoto wajah kader dari sisi kanan KTP.
       - `quality_report`: Laporan kualitas gambar (pencahayaan, ketajaman, resolusi).
@@ -66,7 +149,7 @@ def preprocess_ktp_for_rapidocr(image_source) -> Tuple[np.ndarray, np.ndarray, s
 
     target_w, target_h = 1400, 884
     std_bgr = cv2.resize(raw_bgr, (target_w, target_h), interpolation=cv2.INTER_CUBIC)
-    standardized_ktp_data_url = encode_bgr_to_data_url(std_bgr, "image/jpeg", 88)
+    standardized_ktp_data_url = encode_bgr_to_data_url(std_bgr, "image/jpeg", 90)
 
     # 1. Potong Pasfoto Wajah dari Sisi Kanan e-KTP
     fx1 = int(target_w * 0.715)
@@ -74,7 +157,7 @@ def preprocess_ktp_for_rapidocr(image_source) -> Tuple[np.ndarray, np.ndarray, s
     fx2 = int(target_w * 0.96)
     fy2 = int(target_h * 0.77)
     face_crop = cv2.resize(std_bgr[fy1:fy2, fx1:fx2], (300, 380), interpolation=cv2.INTER_CUBIC)
-    cropped_face_data_url = encode_bgr_to_data_url(face_crop, "image/jpeg", 86)
+    cropped_face_data_url = encode_bgr_to_data_url(face_crop, "image/jpeg", 88)
 
     # 2. Evaluasi Kualitas Gambar (Brightness, Glare, Laplacian Sharpness)
     gray = cv2.cvtColor(std_bgr, cv2.COLOR_BGR2GRAY)
@@ -133,47 +216,24 @@ def preprocess_ktp_for_rapidocr(image_source) -> Tuple[np.ndarray, np.ndarray, s
         "tips": tips,
     }
 
-    # 3. Bangun Citra Utama untuk RapidOCR (CLAHE pada kanal L + Unsharp Mask + Masking Pasfoto)
-    lab = cv2.cvtColor(std_bgr, cv2.COLOR_BGR2LAB)
-    l_chan, a_chan, b_chan = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=2.4, tileGridSize=(8, 8))
-    l_enhanced = clahe.apply(l_chan)
-    enhanced_bgr = cv2.cvtColor(cv2.merge((l_enhanced, a_chan, b_chan)), cv2.COLOR_LAB2BGR)
+    # 3. Citra Utama: Gunakan std_bgr alami dengan penutupan area tanda tangan kanan bawah
+    ocr_main_img = std_bgr.copy()
+    ocr_main_img[int(target_h * 0.65) :, int(target_w * 0.74) :] = 255
 
-    blurred = cv2.GaussianBlur(enhanced_bgr, (0, 0), 1.4)
-    ocr_main_img = cv2.addWeighted(enhanced_bgr, 1.55, blurred, -0.55, 0)
-
-    # Tutup area pasfoto & tanda tangan di sisi kanan bawah dengan warna putih bersih
-    # agar tidak menghasilkan kotak teks palsu pada kolom Pekerjaan / Agama / Status
-    mask_x1 = int(target_w * 0.72)
-    mask_y1 = int(target_h * 0.20)
-    ocr_main_img[mask_y1:, mask_x1:] = 255
-
-    # 4. Bangun Citra Khusus Strip NIK (Diperbesar 1.8x + Red-Channel Cyan Suppression)
-    # Pada e-KTP, latar biru/cyan memiliki nilai Kanal Merah (R) yang kontras terhadap teks hitam
+    # 4. Citra Khusus Strip NIK (Diperbesar 1.75x pada Kanal Merah)
     nik_y1 = int(target_h * 0.08)
-    nik_y2 = int(target_h * 0.34)
+    nik_y2 = int(target_h * 0.32)
     nik_x1 = int(target_w * 0.02)
     nik_x2 = int(target_w * 0.74)
     nik_crop = std_bgr[nik_y1:nik_y2, nik_x1:nik_x2]
-
-    b_c, g_c, r_c = cv2.split(nik_crop)
-    # Angkat warna latar biru/cyan menjadi terang sambil mempertahankan huruf hitam NIK
-    cyan_suppressed = np.where(
-        (b_c.astype(np.int16) > r_c.astype(np.int16) + 14) & (b_c > 90),
-        np.clip(b_c.astype(np.int16) + 30, 0, 255),
-        np.round(0.7 * r_c + 0.2 * g_c + 0.1 * b_c),
-    ).astype(np.uint8)
-
-    nik_clahe = cv2.createCLAHE(clipLimit=2.8, tileGridSize=(6, 6)).apply(cyan_suppressed)
+    _, _, r_nik = cv2.split(nik_crop)
+    nik_clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(6, 6)).apply(r_nik)
     nik_upscaled = cv2.resize(
         nik_clahe,
         (int(nik_crop.shape[1] * 1.75), int(nik_crop.shape[0] * 1.75)),
         interpolation=cv2.INTER_CUBIC,
     )
-    nik_blur = cv2.GaussianBlur(nik_upscaled, (0, 0), 1.2)
-    nik_sharp = cv2.addWeighted(nik_upscaled, 1.6, nik_blur, -0.6, 0)
-    ocr_nik_strip = cv2.cvtColor(nik_sharp, cv2.COLOR_GRAY2BGR)
+    ocr_nik_strip = cv2.cvtColor(nik_upscaled, cv2.COLOR_GRAY2BGR)
 
     return (
         ocr_main_img,
@@ -182,4 +242,3 @@ def preprocess_ktp_for_rapidocr(image_source) -> Tuple[np.ndarray, np.ndarray, s
         cropped_face_data_url,
         quality_report,
     )
-

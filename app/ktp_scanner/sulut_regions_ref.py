@@ -193,9 +193,17 @@ def infer_sulut_prefix_from_header(kab_kota_text: str) -> Optional[str]:
     if not kab_kota_text:
         return None
     upper = kab_kota_text.upper()
-    for dpd_upper, code in DPD_NAME_TO_NIK_PREFIX.items():
+    upper_nospace = re.sub(r"\s+", "", upper)
+    # Urutkan dari nama terpanjang agar 'MINAHASA SELATAN' / 'MINAHASA UTARA' cocok lebih dulu dibanding 'MINAHASA'
+    sorted_items = sorted(DPD_NAME_TO_NIK_PREFIX.items(), key=lambda kv: len(kv[0]), reverse=True)
+    for dpd_upper, code in sorted_items:
         short_name = re.sub(r"^(KABUPATEN|KOTA)\s+", "", dpd_upper)
-        if short_name in upper or string_similarity(short_name, upper) >= 0.75:
+        short_nospace = re.sub(r"\s+", "", short_name)
+        if (
+            short_name in upper
+            or short_nospace in upper_nospace
+            or string_similarity(short_nospace, upper_nospace) >= 0.76
+        ):
             return code
     return None
 
@@ -248,18 +256,22 @@ def heal_nik_with_cross_fields(
     jenis_kelamin: str,
     kab_kota_text: str,
 ) -> str:
-    """Memperbaiki digit NIK yang tertukar oleh OCR menggunakan informasi Kabupaten/Kota, Tanggal Lahir & Jenis Kelamin."""
+    """Memperbaiki digit NIK yang tertukar atau terpotong oleh OCR menggunakan informasi Kabupaten/Kota, Tanggal Lahir & Jenis Kelamin."""
     clean = re.sub(r"\D", "", normalize_ocr_digits(raw_nik or ""))
     if len(clean) < 14:
         return clean
 
-    clean = clean[:16]
     header_prefix = infer_sulut_prefix_from_header(kab_kota_text)
 
-    # 1. Perbaiki 4 digit awal (Kode Provinsi 71 + Kab/Kota Sulut)
-    if len(clean) == 16:
+    # 0. Jika 14 digit karena angka '71' di depan terpotong (misal '06033003050001')
+    if len(clean) == 14 and not clean.startswith("71"):
+        cand_prefix = "71" + clean[:2]
+        if cand_prefix in SULUT_NIK_PREFIX_TO_DPD or (header_prefix and cand_prefix == header_prefix):
+            clean = "71" + clean
+
+    # 1. Perbaiki 4 digit awal (Kode Provinsi 71 + Kab/Kota Sulut) untuk panjang 15 atau 16
+    if len(clean) in (15, 16):
         if header_prefix and clean[:4] != header_prefix:
-            # Jika selisih hanya 1-2 digit di 4 angka awal, gunakan prefix resmi dari header KTP
             diff_count = sum(1 for a, b in zip(clean[:4], header_prefix) if a != b)
             if diff_count <= 2:
                 clean = header_prefix + clean[4:]
@@ -268,7 +280,21 @@ def heal_nik_with_cross_fields(
             if possible in SULUT_NIK_PREFIX_TO_DPD:
                 clean = possible + clean[4:]
 
-    # 2. Perbaiki digit 7-12 (DDMMYY) jika tanggal_lahir (YYYY-MM-DD) terbaca jelas dari baris TTL
+    # 2. Jika 15 digit karena 1 digit di bagian tengah DDMMYY hilang (misal '710510610880001' -> kurang angka '6' pada bulan '06')
+    if len(clean) == 15 and tanggal_lahir and re.match(r"^\d{4}-\d{2}-\d{2}$", tanggal_lahir):
+        parts = tanggal_lahir.split("-")
+        mm_str = parts[1]
+        dd_num = int(parts[2])
+        nik_dd_raw = int(clean[6:8]) if clean[6:8].isdigit() else 0
+        is_female = jenis_kelamin == "Perempuan" or (not jenis_kelamin and 41 <= nik_dd_raw <= 71)
+        expected_dd = f"{dd_num + 40:02d}" if is_female else f"{dd_num:02d}"
+        # Ambil 2 digit tahun dari posisi 9..11 pada string 15 digit
+        yy_from_nik = clean[9:11]
+        clean = clean[:6] + expected_dd + mm_str + yy_from_nik + clean[11:15]
+
+    clean = clean[:16]
+
+    # 3. Perbaiki digit 7-10 (DDMM) jika tanggal_lahir (YYYY-MM-DD) terbaca jelas dari baris TTL
     if len(clean) == 16 and tanggal_lahir and re.match(r"^\d{4}-\d{2}-\d{2}$", tanggal_lahir):
         parts = tanggal_lahir.split("-")
         yy_str = parts[0][2:4]
@@ -278,14 +304,17 @@ def heal_nik_with_cross_fields(
         nik_dd_raw = int(clean[6:8]) if clean[6:8].isdigit() else 0
         is_female = jenis_kelamin == "Perempuan" or (not jenis_kelamin and 41 <= nik_dd_raw <= 71)
         expected_dd = f"{dd_num + 40:02d}" if is_female else f"{dd_num:02d}"
-        expected_ddmmyy = f"{expected_dd}{mm_str}{yy_str}"
+        expected_ddmm = f"{expected_dd}{mm_str}"
 
-        current_ddmmyy = clean[6:12]
-        if current_ddmmyy != expected_ddmmyy:
-            diff_digits = sum(1 for a, b in zip(current_ddmmyy, expected_ddmmyy) if a != b)
-            # Jika digit 7-12 saat ini tidak valid ATAU hanya beda 1-3 digit akibat salah baca OCR, koreksi!
-            decoded_curr = decode_nik_info(clean)
-            if not decoded_curr.get("isValidFormat") or diff_digits <= 3:
-                clean = clean[:6] + expected_ddmmyy + clean[12:]
+        current_ddmm = clean[6:10]
+        if current_ddmm != expected_ddmm:
+            diff_ddmm = sum(1 for a, b in zip(current_ddmm, expected_ddmm) if a != b)
+            if diff_ddmm <= 2:
+                clean = clean[:6] + expected_ddmm + clean[10:]
+
+        # Untuk 2 digit tahun (posisi 10:12), hanya timpa jika di NIK bukan angka valid
+        current_yy = clean[10:12]
+        if not current_yy.isdigit():
+            clean = clean[:10] + yy_str + clean[12:]
 
     return clean
