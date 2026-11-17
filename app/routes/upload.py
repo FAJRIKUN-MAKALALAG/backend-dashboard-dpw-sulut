@@ -11,9 +11,9 @@ logger = logging.getLogger("nasdem.upload")
 
 @bp.get("/uploads/<category>/<filename>")
 def serve_uploaded_file(category: str, filename: str):
-    """Menampilkan atau mengunduh berkas fisik foto KTP atau Profil."""
+    """Menampilkan atau mengunduh berkas fisik foto KTP, Profil, atau Inventaris."""
     cat = (category or "").lower().strip()
-    if cat not in ("profile", "ktp"):
+    if cat not in ("profile", "ktp", "inventory"):
         resp = Response(b"", status=404, mimetype="image/webp")
         resp.headers["Access-Control-Allow-Origin"] = "*"
         resp.headers["Cross-Origin-Resource-Policy"] = "cross-origin"

@@ -66,6 +66,11 @@ def create_app() -> Flask:
         except Exception as exc:
             logger.warning(f"Inisialisasi tabel structure_slots dilewati: {exc}")
         try:
+            from app.routes.inventory import ensure_inventory_table_exists
+            ensure_inventory_table_exists()
+        except Exception as exc:
+            logger.warning(f"Inisialisasi tabel inventory_items dilewati: {exc}")
+        try:
             from app.models import Member
             arvan = db.session.get(Member, "7106033003050011")
             if arvan and arvan.nomor_ekta != "2502449098878709":

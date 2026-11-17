@@ -218,3 +218,35 @@ class SupportMessage(db.Model):
     attachment_url = db.Column(db.Text)
     is_read = db.Column(db.Boolean, default=False, index=True)
     created_at = db.Column(db.DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class InventoryItem(db.Model):
+    """Data inventaris aset & perlengkapan fisik Gedung Kantor DPW NasDem Sulut (Lantai 1 s/d Lantai 5)."""
+
+    __tablename__ = "inventory_items"
+
+    id = db.Column(db.String(50), primary_key=True)
+    kode_barang = db.Column(db.String(50), nullable=False, index=True)
+    nama_barang = db.Column(db.String(255), nullable=False, index=True)
+    kategori = db.Column(db.String(100), nullable=False, default="Furnitur & Mebel", index=True)
+    lantai = db.Column(db.Integer, nullable=False, default=1, index=True)
+    ruangan = db.Column(db.String(150), nullable=False, default="Ruang Utama", index=True)
+    jumlah = db.Column(db.Integer, nullable=False, default=1)
+    jumlah_baik = db.Column(db.Integer, nullable=False, default=1)
+    jumlah_perbaikan = db.Column(db.Integer, nullable=False, default=0)
+    jumlah_rusak = db.Column(db.Integer, nullable=False, default=0)
+    satuan = db.Column(db.String(50), nullable=False, default="Unit")
+    kondisi = db.Column(db.String(50), nullable=False, default="Baik", index=True)
+    merk_spesifikasi = db.Column(db.String(255))
+    keterangan = db.Column(db.Text)
+    penanggung_jawab = db.Column(db.String(150))
+    foto_url = db.Column(db.Text)
+    diubah_oleh = db.Column(db.String(150))
+    created_at = db.Column(db.DateTime(timezone=True), server_default=func.now())
+    updated_at = db.Column(db.DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    def __init__(self, **kwargs):
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+

@@ -21,15 +21,19 @@ BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 UPLOADS_DIR = os.path.join(BASE_DIR, "uploads")
 PROFILE_DIR = os.path.join(UPLOADS_DIR, "profile")
 KTP_DIR = os.path.join(UPLOADS_DIR, "ktp")
+INVENTORY_DIR = os.path.join(UPLOADS_DIR, "inventory")
 
 os.makedirs(PROFILE_DIR, exist_ok=True)
 os.makedirs(KTP_DIR, exist_ok=True)
+os.makedirs(INVENTORY_DIR, exist_ok=True)
 
 
-def get_category_dir(category: str) -> str:
+def get_category_dir(category: str) -> Tuple[str, str]:
     cat = (category or "").lower().strip()
     if cat in ("ktp", "idcard", "foto_ktp"):
         return KTP_DIR, "ktp"
+    if cat in ("inventory", "inventaris", "barang", "aset"):
+        return INVENTORY_DIR, "inventory"
     return PROFILE_DIR, "profile"
 
 

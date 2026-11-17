@@ -11,6 +11,7 @@ from app.routes.structure_slots import bp as structure_slots_bp
 from app.ktp_scanner import ktp_scanner_bp
 from app.dpp_integration import dpp_bp
 from app.routes.support import bp as support_bp
+from app.routes.inventory import bp as inventory_bp
 
 
 def register_blueprints(app):
@@ -28,5 +29,6 @@ def register_blueprints(app):
         ktp_scanner_bp,
         dpp_bp,
         support_bp,
+        inventory_bp,
     ):
         app.register_blueprint(bp, url_prefix="/api")
