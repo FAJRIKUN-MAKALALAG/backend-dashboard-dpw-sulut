@@ -525,10 +525,17 @@ def slot_to_grid_dict(slot: StructureSlot, member_map: dict) -> dict:
 @login_required
 def get_territory_structure_slots():
     """Mengambil daftar lengkap kursi jabatan (terisi maupun kosong/lowong) dari database untuk wilayah tertentu."""
+    claims = current_claims()
     tingkat = request.args.get("tingkat", "DPD")
     dpd = request.args.get("dpd", "Sulawesi Utara")
     dpc = request.args.get("dpc", "")
     dprt = request.args.get("dprt", "")
+
+    t, c_dpd, c_dpc, c_dprt = _normalize_territory_params(tingkat, dpd, dpc, dprt)
+    if t == "DPW" and claims.get("role") not in ("SUPER_ADMIN", "ADMIN_DPW"):
+        return jsonify(error="Wilayah DPW hanya dapat diakses oleh admin DPW atau Super Admin"), 403
+    if not in_scope(claims, c_dpd, c_dpc, c_dprt):
+        return jsonify(error="Wilayah di luar cakupan akses akun Anda"), 403
 
     slots = ensure_territory_slots_initialized(tingkat, dpd, dpc, dprt)
     niks = list({s.member_nik for s in slots if s.member_nik})

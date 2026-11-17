@@ -3,7 +3,7 @@ import uuid
 from flask import Blueprint, jsonify, request
 from sqlalchemy import text
 
-from app.auth import current_claims, super_admin_required
+from app.auth import current_claims, inventory_access_required
 from app.extensions import db
 from app.models import InventoryItem
 from app.services.image_storage import (
@@ -106,7 +106,7 @@ def _process_inventory_photo(raw_foto: str, identifier: str) -> str:
 
 
 @bp.get("/inventory")
-@super_admin_required
+@inventory_access_required
 def list_inventory():
     """Mengambil seluruh daftar barang inventaris gedung 5 lantai."""
     lantai_param = request.args.get("lantai")
@@ -146,7 +146,7 @@ def list_inventory():
 
 
 @bp.post("/inventory")
-@super_admin_required
+@inventory_access_required
 def create_inventory_item():
     """Menambahkan barang inventaris baru ke salah satu lantai (1-5)."""
     claims = current_claims()
@@ -218,7 +218,7 @@ def create_inventory_item():
 
 
 @bp.put("/inventory/<item_id>")
-@super_admin_required
+@inventory_access_required
 def update_inventory_item(item_id: str):
     """Memperbarui detail, lokasi lantai/ruangan, stok, atau foto barang inventaris."""
     claims = current_claims()
@@ -303,7 +303,7 @@ def update_inventory_item(item_id: str):
 
 
 @bp.delete("/inventory/<item_id>")
-@super_admin_required
+@inventory_access_required
 def delete_inventory_item(item_id: str):
     """Menghapus barang inventaris dari database beserta berkas fotonya."""
     item = db.session.get(InventoryItem, item_id)

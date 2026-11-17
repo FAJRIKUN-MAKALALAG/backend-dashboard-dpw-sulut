@@ -8,7 +8,7 @@ from app.utils import row_to_dict
 
 bp = Blueprint("users", __name__)
 
-ROLES = ("SUPER_ADMIN", "ADMIN_DPW", "ADMIN_DPD", "ADMIN_DPC", "ADMIN_DPRT")
+ROLES = ("SUPER_ADMIN", "ADMIN_DPW", "ADMIN_DPD", "ADMIN_DPC", "ADMIN_DPRT", "ADMIN_INVENTORY")
 USER_FIELDS = {
     "id": "id", "member_nik": "memberNik", "nomor_ekta": "nomorEkta", "username": "username",
     "full_name": "fullName", "role": "role", "dpd_access": "dpdAccess", "dpc_access": "dpcAccess",
@@ -26,6 +26,14 @@ def _apply(user: AppUser, data: dict):
     for camel, col in INPUT_MAP.items():
         if camel in data:
             setattr(user, col, data[camel])
+    if user.role == "INVENTORY":
+        user.role = "ADMIN_INVENTORY"
+    if user.role == "ADMIN_INVENTORY":
+        user.dpd_access = "ALL"
+        user.dpc_access = "ALL"
+        user.dprt_access = "ALL"
+        if not user.jabatan:
+            user.jabatan = "Admin Inventaris Kantor DPW Sulut"
     if data.get("password"):
         user.password_hash = generate_password_hash(data["password"].strip())
 
@@ -44,6 +52,9 @@ def create_user():
     if not data.get("username") or not data.get("password") or not data.get("fullName"):
         return jsonify(error="username, password, dan fullName wajib diisi"), 400
     role = data.get("role", "ADMIN_DPD")
+    if role == "INVENTORY":
+        role = "ADMIN_INVENTORY"
+        data["role"] = "ADMIN_INVENTORY"
     if role not in ROLES:
         return jsonify(error="Role tidak valid"), 400
     if role == "ADMIN_DPC" and (not data.get("dpcAccess") or data.get("dpcAccess") == "ALL"):
@@ -55,7 +66,10 @@ def create_user():
             return jsonify(error="Akun Admin DPRt wajib memilih wilayah Desa/Kelurahan (DPRt) spesifik."), 400
     if AppUser.query.filter_by(username=data["username"].strip()).first():
         return jsonify(error="Username sudah dipakai"), 409
-    u = AppUser(username=data["username"].strip(), full_name=data["fullName"], password_hash="")
+    u = AppUser()
+    u.username = data["username"].strip()
+    u.full_name = data["fullName"].strip()
+    u.password_hash = ""
     _apply(u, data)
     db.session.add(u)
     db.session.commit()
@@ -70,6 +84,9 @@ def update_user(uid):
         return jsonify(error="Akun tidak ditemukan"), 404
     data = request.get_json(silent=True) or {}
     role = data.get("role", u.role)
+    if role == "INVENTORY":
+        role = "ADMIN_INVENTORY"
+        data["role"] = "ADMIN_INVENTORY"
     if "role" in data and role not in ROLES:
         return jsonify(error="Role tidak valid"), 400
     if role == "ADMIN_DPC" and ("dpcAccess" in data and (not data.get("dpcAccess") or data.get("dpcAccess") == "ALL")):

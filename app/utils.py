@@ -393,9 +393,7 @@ def row_to_dict(obj, fields: dict) -> dict:
 def is_global(claims: dict) -> bool:
     """Super Admin dan Admin DPW selalu memiliki akses global penuh ke seluruh wilayah Sulawesi Utara."""
     role = claims.get("role")
-    if role in ("SUPER_ADMIN", "ADMIN_DPW"):
-        return True
-    return claims.get("dpdAccess") == "ALL"
+    return role in ("SUPER_ADMIN", "ADMIN_DPW")
 
 
 def clean_region_name(name: str) -> str:
@@ -438,6 +436,10 @@ def apply_scope(query, claims: dict, model=Member):
         return query
     role = claims.get("role")
 
+    # Role Inventaris tidak memiliki akses ke database anggota/struktur politik
+    if role in ("ADMIN_INVENTORY", "INVENTORY"):
+        return query.filter(False)
+
     # Anggota biasa tanpa SK HANYA memiliki akses ke data pribadinya sendiri
     if role == "ANGGOTA":
         my_nik = str(claims.get("adminNik") or "")
@@ -447,23 +449,30 @@ def apply_scope(query, claims: dict, model=Member):
             return query.filter(getattr(model, "member_nik") == my_nik)
         return query.filter(False)
 
-    # 1. DPD filter: berlaku untuk ADMIN_DPD, ADMIN_DPC, ADMIN_DPRT
-    dpd_val = claims.get("dpdAccess")
-    if dpd_val and dpd_val != "ALL" and hasattr(model, "dpd"):
+    if role not in ("ADMIN_DPD", "ADMIN_DPC", "ADMIN_DPRT"):
+        return query.filter(False)
+
+    # 1. DPD filter (Wajib valid untuk ADMIN_DPD, ADMIN_DPC, ADMIN_DPRT — Fail-Closed)
+    dpd_val = (claims.get("dpdAccess") or "").strip()
+    if not dpd_val or dpd_val in ("ALL", "-", "Sulawesi Utara"):
+        return query.filter(False)
+    if hasattr(model, "dpd"):
         query = query.filter(getattr(model, "dpd") == dpd_val)
 
-    # 2. DPC filter: hanya membatasi ADMIN_DPC dan ADMIN_DPRT
-    # ADMIN_DPD berhak melihat SELURUH DPC di wilayah DPD-nya
+    # 2. DPC filter (Wajib valid untuk ADMIN_DPC dan ADMIN_DPRT — Fail-Closed)
     if role in ("ADMIN_DPC", "ADMIN_DPRT"):
-        dpc_val = claims.get("dpcAccess")
-        if dpc_val and dpc_val not in ("ALL", "Umum (DPD)", "-", "") and hasattr(model, "dpc"):
+        dpc_val = (claims.get("dpcAccess") or "").strip()
+        if not dpc_val or dpc_val in ("ALL", "Umum (DPD)", "-"):
+            return query.filter(False)
+        if hasattr(model, "dpc"):
             query = query.filter(getattr(model, "dpc") == dpc_val)
 
-    # 3. DPRt filter: hanya membatasi ADMIN_DPRT
-    # ADMIN_DPD dan ADMIN_DPC berhak melihat SELURUH DPRt di bawah wilayahnya
+    # 3. DPRt filter (Wajib valid untuk ADMIN_DPRT — Fail-Closed)
     if role == "ADMIN_DPRT":
-        dprt_val = claims.get("dprtAccess")
-        if dprt_val and dprt_val not in ("ALL", "Pusat/Umum", "-", "") and hasattr(model, "dprt"):
+        dprt_val = (claims.get("dprtAccess") or "").strip()
+        if not dprt_val or dprt_val in ("ALL", "Pusat/Umum", "-"):
+            return query.filter(False)
+        if hasattr(model, "dprt"):
             query = query.filter(getattr(model, "dprt") == dprt_val)
 
     return query
@@ -473,25 +482,28 @@ def in_scope(claims: dict, dpd=None, dpc=None, dprt=None) -> bool:
     if is_global(claims):
         return True
     role = claims.get("role")
-    if role == "ANGGOTA":
+    if role in ("ANGGOTA", "ADMIN_INVENTORY", "INVENTORY") or role not in ("ADMIN_DPD", "ADMIN_DPC", "ADMIN_DPRT"):
         return False
 
-    dpd_want = claims.get("dpdAccess")
-    if dpd_want and dpd_want != "ALL":
-        if clean_region_name(dpd) != clean_region_name(dpd_want):
-            return False
+    dpd_want = (claims.get("dpdAccess") or "").strip()
+    if not dpd_want or dpd_want in ("ALL", "-", "Sulawesi Utara"):
+        return False
+    if clean_region_name(dpd) != clean_region_name(dpd_want):
+        return False
 
     if role in ("ADMIN_DPC", "ADMIN_DPRT"):
-        dpc_want = claims.get("dpcAccess")
-        if dpc_want and dpc_want not in ("ALL", "Umum (DPD)", "-", ""):
-            if clean_region_name(dpc) != clean_region_name(dpc_want):
-                return False
+        dpc_want = (claims.get("dpcAccess") or "").strip()
+        if not dpc_want or dpc_want in ("ALL", "Umum (DPD)", "-"):
+            return False
+        if clean_region_name(dpc) != clean_region_name(dpc_want):
+            return False
 
     if role == "ADMIN_DPRT":
-        dprt_want = claims.get("dprtAccess")
-        if dprt_want and dprt_want not in ("ALL", "Pusat/Umum", "-", ""):
-            if clean_region_name(dprt) != clean_region_name(dprt_want):
-                return False
+        dprt_want = (claims.get("dprtAccess") or "").strip()
+        if not dprt_want or dprt_want in ("ALL", "Pusat/Umum", "-"):
+            return False
+        if clean_region_name(dprt) != clean_region_name(dprt_want):
+            return False
 
     return True
 
@@ -501,7 +513,10 @@ def member_scope_query(claims: dict):
     q = Member.query
     if is_global(claims):
         return q
-    if claims.get("role") == "ANGGOTA":
+    role = claims.get("role")
+    if role in ("ADMIN_INVENTORY", "INVENTORY"):
+        return q.filter(False)
+    if role == "ANGGOTA":
         my_nik = str(claims.get("adminNik") or "")
         return q.filter(Member.nik == my_nik)
     in_positions = apply_scope(select(Position.member_nik), claims, Position)

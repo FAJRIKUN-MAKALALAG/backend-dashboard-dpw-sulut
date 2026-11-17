@@ -98,24 +98,32 @@ def claims_for(u: AppUser) -> dict:
     elif u.role == "ADMIN_DPD":
         dpc_acc = "ALL"
         dprt_acc = "ALL"
-    elif u.role in ("SUPER_ADMIN", "ADMIN_DPW"):
+    elif u.role in ("SUPER_ADMIN", "ADMIN_DPW", "ADMIN_INVENTORY", "INVENTORY"):
         dpd_acc = "ALL"
         dpc_acc = "ALL"
         dprt_acc = "ALL"
 
+    normalized_role = "ADMIN_INVENTORY" if u.role == "INVENTORY" else u.role
+
     # Hanya Super Admin dan Pengurus struktural ber-SK yang berwenang menambahkan anggota baru
     is_structural_leader = bool(
-        u.role in ("SUPER_ADMIN", "ADMIN_DPW", "ADMIN_DPD", "ADMIN_DPC", "ADMIN_DPRT") and u.role != "ANGGOTA"
+        normalized_role in ("SUPER_ADMIN", "ADMIN_DPW", "ADMIN_DPD", "ADMIN_DPC", "ADMIN_DPRT")
+    )
+
+    default_jabatan = (
+        "Admin Inventaris Kantor DPW Sulut"
+        if normalized_role == "ADMIN_INVENTORY"
+        else ("Anggota Biasa" if normalized_role == "ANGGOTA" else f"Admin {normalized_role}")
     )
 
     return {
-        "role": u.role,
+        "role": normalized_role,
         "dpdAccess": dpd_acc,
         "dpcAccess": dpc_acc,
         "dprtAccess": dprt_acc,
         "adminName": u.full_name,
         "adminNik": u.member_nik or u.username,
-        "jabatan": u.jabatan or ("Anggota Biasa" if u.role == "ANGGOTA" else f"Admin {u.role}"),
+        "jabatan": u.jabatan or default_jabatan,
         "canAddMembers": is_structural_leader,
         "hasSk": is_structural_leader,
     }
