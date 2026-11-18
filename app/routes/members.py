@@ -28,6 +28,7 @@ from app.utils import (
     position_values_from_row,
     refresh_member_summary,
     rename_member_nik_safely,
+    validate_required_import_fields,
 )
 
 bp = Blueprint("members", __name__)
@@ -531,9 +532,11 @@ def _upsert_rows(raw_rows, claims, replace_territory_suborgs: bool = False):
         v.setdefault("dpc", "-")
         v.setdefault("dprt", "-")
         nik = v.get("nik") or ""
-        if not is_acceptable_nik(nik):
-            errors.append({"row": i, "nik": nik, "error": "NIK harus berupa angka (8-20 digit)"})
+        req_err = validate_required_import_fields(v)
+        if req_err:
+            errors.append({"row": i, "nik": nik, "error": req_err})
             continue
+        nik = v["nik"]
         if not all(v.get(k) for k in ("nama_lengkap", "dpd")):
             errors.append({"row": i, "nik": nik, "error": "Nama/DPD wajib diisi"})
             continue

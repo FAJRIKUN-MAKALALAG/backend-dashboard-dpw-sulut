@@ -178,6 +178,39 @@ def is_acceptable_nik(nik: str) -> bool:
     return bool(s.isdigit() and 8 <= len(s) <= 20)
 
 
+_IMPORT_PLACEHOLDERS = {"", "-", "--", "---", "—", "null", "none", "n/a", "0"}
+
+
+def validate_required_import_fields(v: dict) -> str | None:
+    """Validasi ketat 3 kolom wajib import Excel/massal (NIK 16 digit, e-KTA asli, No. HP >= 8 digit)."""
+    import re
+
+    nik = re.sub(r"\D", "", str(v.get("nik") or "")).strip()
+    ekta = str(v.get("nomor_ekta") or "").strip()
+    hp = str(v.get("nomor_hp") or "").strip()
+    hp_digits = re.sub(r"\D", "", hp)
+
+    missing = []
+    if not (nik.isdigit() and len(nik) == 16) or is_generated_nik(nik) or nik.startswith("000000"):
+        missing.append("NIK (wajib 16 digit)")
+    if (
+        ekta.lower() in _IMPORT_PLACEHOLDERS
+        or ekta.upper().startswith("KTA-")
+        or len(ekta) < 5
+        or not any(ch.isdigit() for ch in ekta)
+    ):
+        missing.append("Nomor e-KTA")
+    if hp.lower() in _IMPORT_PLACEHOLDERS or len(hp_digits) < 8:
+        missing.append("No. Telepon/HP")
+
+    if missing:
+        return f"Data ditolak — kolom wajib belum lengkap: {', '.join(missing)}"
+    v["nik"] = nik
+    v["nomor_ekta"] = ekta
+    v["nomor_hp"] = hp
+    return None
+
+
 def is_subsequence_digits(short_s: str, long_s: str) -> bool:
     """True bila seluruh digit short_s muncul secara berurutan di dalam long_s."""
     it = iter(long_s)
