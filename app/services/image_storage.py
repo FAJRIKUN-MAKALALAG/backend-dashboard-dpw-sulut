@@ -22,10 +22,12 @@ UPLOADS_DIR = os.path.join(BASE_DIR, "uploads")
 PROFILE_DIR = os.path.join(UPLOADS_DIR, "profile")
 KTP_DIR = os.path.join(UPLOADS_DIR, "ktp")
 INVENTORY_DIR = os.path.join(UPLOADS_DIR, "inventory")
+FINANCE_DIR = os.path.join(UPLOADS_DIR, "finance")
 
 os.makedirs(PROFILE_DIR, exist_ok=True)
 os.makedirs(KTP_DIR, exist_ok=True)
 os.makedirs(INVENTORY_DIR, exist_ok=True)
+os.makedirs(FINANCE_DIR, exist_ok=True)
 
 
 def get_category_dir(category: str) -> Tuple[str, str]:
@@ -34,6 +36,8 @@ def get_category_dir(category: str) -> Tuple[str, str]:
         return KTP_DIR, "ktp"
     if cat in ("inventory", "inventaris", "barang", "aset"):
         return INVENTORY_DIR, "inventory"
+    if cat in ("finance", "keuangan", "proof", "bukti", "nota"):
+        return FINANCE_DIR, "finance"
     return PROFILE_DIR, "profile"
 
 

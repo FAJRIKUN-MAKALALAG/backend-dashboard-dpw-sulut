@@ -469,8 +469,8 @@ def apply_scope(query, claims: dict, model=Member):
         return query
     role = claims.get("role")
 
-    # Role Inventaris tidak memiliki akses ke database anggota/struktur politik
-    if role in ("ADMIN_INVENTORY", "INVENTORY"):
+    # Role Inventaris & Wakil Bendahara tidak memiliki akses ke database anggota/struktur politik
+    if role in ("ADMIN_INVENTORY", "INVENTORY", "WAKIL_BENDAHARA"):
         return query.filter(False)
 
     # Anggota biasa tanpa SK HANYA memiliki akses ke data pribadinya sendiri
@@ -515,7 +515,7 @@ def in_scope(claims: dict, dpd=None, dpc=None, dprt=None) -> bool:
     if is_global(claims):
         return True
     role = claims.get("role")
-    if role in ("ANGGOTA", "ADMIN_INVENTORY", "INVENTORY") or role not in ("ADMIN_DPD", "ADMIN_DPC", "ADMIN_DPRT"):
+    if role in ("ANGGOTA", "ADMIN_INVENTORY", "INVENTORY", "WAKIL_BENDAHARA") or role not in ("ADMIN_DPD", "ADMIN_DPC", "ADMIN_DPRT"):
         return False
 
     dpd_want = (claims.get("dpdAccess") or "").strip()
@@ -547,7 +547,7 @@ def member_scope_query(claims: dict):
     if is_global(claims):
         return q
     role = claims.get("role")
-    if role in ("ADMIN_INVENTORY", "INVENTORY"):
+    if role in ("ADMIN_INVENTORY", "INVENTORY", "WAKIL_BENDAHARA"):
         return q.filter(False)
     if role == "ANGGOTA":
         my_nik = str(claims.get("adminNik") or "")

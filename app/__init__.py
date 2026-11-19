@@ -71,6 +71,11 @@ def create_app() -> Flask:
         except Exception as exc:
             logger.warning(f"Inisialisasi tabel inventory_items dilewati: {exc}")
         try:
+            from app.services.finance_service import ensure_finance_tables_exists
+            ensure_finance_tables_exists()
+        except Exception as exc:
+            logger.warning(f"Inisialisasi tabel modul keuangan dilewati: {exc}")
+        try:
             from app.models import Member
             arvan = db.session.get(Member, "7106033003050011")
             if arvan and arvan.nomor_ekta != "2502449098878709":

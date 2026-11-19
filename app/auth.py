@@ -32,5 +32,6 @@ def roles_required(*roles):
 
 
 super_admin_required = roles_required("SUPER_ADMIN")
-inventory_access_required = roles_required("SUPER_ADMIN", "ADMIN_INVENTORY", "INVENTORY")
+inventory_access_required = roles_required("SUPER_ADMIN", "ADMIN_INVENTORY", "INVENTORY", "WAKIL_BENDAHARA")
+finance_access_required = roles_required("SUPER_ADMIN", "WAKIL_BENDAHARA")
 

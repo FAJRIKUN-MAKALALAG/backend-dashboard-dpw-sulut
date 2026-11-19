@@ -12,6 +12,7 @@ from app.ktp_scanner import ktp_scanner_bp
 from app.dpp_integration import dpp_bp
 from app.routes.support import bp as support_bp
 from app.routes.inventory import bp as inventory_bp
+from app.routes.finance import bp as finance_bp
 
 
 def register_blueprints(app):
@@ -30,5 +31,6 @@ def register_blueprints(app):
         dpp_bp,
         support_bp,
         inventory_bp,
+        finance_bp,
     ):
         app.register_blueprint(bp, url_prefix="/api")

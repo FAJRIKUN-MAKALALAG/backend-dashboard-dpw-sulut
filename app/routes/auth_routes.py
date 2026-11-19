@@ -98,7 +98,7 @@ def claims_for(u: AppUser) -> dict:
     elif u.role == "ADMIN_DPD":
         dpc_acc = "ALL"
         dprt_acc = "ALL"
-    elif u.role in ("SUPER_ADMIN", "ADMIN_DPW", "ADMIN_INVENTORY", "INVENTORY"):
+    elif u.role in ("SUPER_ADMIN", "ADMIN_DPW", "ADMIN_INVENTORY", "INVENTORY", "WAKIL_BENDAHARA"):
         dpd_acc = "ALL"
         dpc_acc = "ALL"
         dprt_acc = "ALL"
@@ -113,7 +113,11 @@ def claims_for(u: AppUser) -> dict:
     default_jabatan = (
         "Admin Inventaris Kantor DPW Sulut"
         if normalized_role == "ADMIN_INVENTORY"
-        else ("Anggota Biasa" if normalized_role == "ANGGOTA" else f"Admin {normalized_role}")
+        else (
+            "Wakil Bendahara DPW Sulut"
+            if normalized_role == "WAKIL_BENDAHARA"
+            else ("Anggota Biasa" if normalized_role == "ANGGOTA" else f"Admin {normalized_role}")
+        )
     )
 
     return {

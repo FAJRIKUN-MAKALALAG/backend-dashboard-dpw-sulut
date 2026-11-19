@@ -8,7 +8,15 @@ from app.utils import row_to_dict
 
 bp = Blueprint("users", __name__)
 
-ROLES = ("SUPER_ADMIN", "ADMIN_DPW", "ADMIN_DPD", "ADMIN_DPC", "ADMIN_DPRT", "ADMIN_INVENTORY")
+ROLES = (
+    "SUPER_ADMIN",
+    "ADMIN_DPW",
+    "ADMIN_DPD",
+    "ADMIN_DPC",
+    "ADMIN_DPRT",
+    "ADMIN_INVENTORY",
+    "WAKIL_BENDAHARA",
+)
 USER_FIELDS = {
     "id": "id", "member_nik": "memberNik", "nomor_ekta": "nomorEkta", "username": "username",
     "full_name": "fullName", "role": "role", "dpd_access": "dpdAccess", "dpc_access": "dpcAccess",
@@ -28,12 +36,16 @@ def _apply(user: AppUser, data: dict):
             setattr(user, col, data[camel])
     if user.role == "INVENTORY":
         user.role = "ADMIN_INVENTORY"
-    if user.role == "ADMIN_INVENTORY":
+    if user.role in ("ADMIN_INVENTORY", "WAKIL_BENDAHARA"):
         user.dpd_access = "ALL"
         user.dpc_access = "ALL"
         user.dprt_access = "ALL"
         if not user.jabatan:
-            user.jabatan = "Admin Inventaris Kantor DPW Sulut"
+            user.jabatan = (
+                "Admin Inventaris Kantor DPW Sulut"
+                if user.role == "ADMIN_INVENTORY"
+                else "Wakil Bendahara DPW Sulut"
+            )
     if data.get("password"):
         user.password_hash = generate_password_hash(data["password"].strip())
 

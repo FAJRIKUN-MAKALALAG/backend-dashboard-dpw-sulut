@@ -250,3 +250,13 @@ class InventoryItem(db.Model):
             setattr(self, key, value)
 
 
+from app.models_finance import (  # noqa: E402, F401
+    FinanceAutodebetHistory,
+    FinanceDppRemittance,
+    FinanceDuesPayment,
+    FinanceLegislator,
+    FinanceTariffRule,
+    FinanceTransaction,
+)
+
+
