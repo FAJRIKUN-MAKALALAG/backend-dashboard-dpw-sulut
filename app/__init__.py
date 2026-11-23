@@ -61,6 +61,14 @@ def create_app() -> Flask:
         except Exception as exc:
             logger.warning(f"Inisialisasi tabel otomatis dilewati: {exc}")
         try:
+            db.session.execute(
+                db.text("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS delegated_for_ketua_nik VARCHAR(50)")
+            )
+            db.session.commit()
+        except Exception as exc:
+            db.session.rollback()
+            logger.warning(f"Migrasi kolom delegated_for_ketua_nik dilewati: {exc}")
+        try:
             from app.routes.structure_slots import ensure_structure_slots_table_exists
             ensure_structure_slots_table_exists()
         except Exception as exc:
@@ -154,7 +162,7 @@ def create_app() -> Flask:
         """Endpoint diagnostik khusus Administrator untuk melihat baris log terbaru."""
         from app.auth import current_claims
         claims = current_claims()
-        if not claims or claims.get("role") not in ("SUPER_ADMIN", "ADMIN_DPW"):
+        if not claims or claims.get("role") not in ("SUPER_ADMIN", "KETUA_DPW", "ADMIN_DPW"):
             return jsonify(error="Akses ditolak: Hanya Administrator yang dapat melihat log"), 403
 
         log_type = request.args.get("type", "error")

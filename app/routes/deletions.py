@@ -6,7 +6,14 @@ from app.auth import current_claims, login_required, roles_required
 from app.cache import get_or_compute, invalidate_all_data_cache
 from app.extensions import db
 from app.models import AuditLog, DeletionRequest, Member, Position
-from app.utils import apply_scope, in_scope, row_to_dict
+from app.utils import (
+    DELETION_APPROVER_ROLES,
+    PENGURUS_ROLES,
+    TERRITORIAL_MANAGER_ROLES,
+    apply_scope,
+    in_scope,
+    row_to_dict,
+)
 
 bp = Blueprint("deletions", __name__)
 
@@ -21,6 +28,9 @@ DEL_FIELDS = {
 @login_required
 def list_requests():
     claims = current_claims()
+    role = claims.get("role")
+    if role in PENGURUS_ROLES + ("ANGGOTA", "ADMIN_INVENTORY", "INVENTORY", "WAKIL_BENDAHARA"):
+        return jsonify(error="Anda tidak memiliki akses melihat daftar persetujuan penghapusan."), 403
     status_filter = request.args.get("status") or ""
 
     def _compute():
@@ -38,6 +48,11 @@ def list_requests():
 @login_required
 def create_request():
     claims = current_claims()
+    role = claims.get("role")
+    if role not in (TERRITORIAL_MANAGER_ROLES + ("PENGURUS_DPW",)):
+        return jsonify(
+            error="Hanya Admin/Ketua wilayah dan Pengurus DPW yang berwenang mengajukan permohonan penghapusan."
+        ), 403
     data = request.get_json(silent=True) or {}
     reason = (data.get("reason") or "").strip()
     if len(reason) < 15:
@@ -63,7 +78,7 @@ def create_request():
 
 
 @bp.post("/deletion-requests/<req_id>/review")
-@roles_required("SUPER_ADMIN", "ADMIN_DPW")
+@roles_required("SUPER_ADMIN", "KETUA_DPW")
 def review_request(req_id):
     claims = current_claims()
     data = request.get_json(silent=True) or {}

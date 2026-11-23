@@ -13,7 +13,7 @@ from app.cache import invalidate_all_data_cache
 from app.extensions import db
 from app.models import Member, Position, StructureSlot
 from app.services.structure_templates import get_structure_template, make_slot_id
-from app.utils import in_scope, make_position_id, refresh_member_summary
+from app.utils import TERRITORIAL_MANAGER_ROLES, in_scope, make_position_id, refresh_member_summary
 
 bp = Blueprint("structure_slots", __name__)
 
@@ -567,8 +567,10 @@ def get_territory_structure_slots():
     dprt = request.args.get("dprt", "")
 
     t, c_dpd, c_dpc, c_dprt = _normalize_territory_params(tingkat, dpd, dpc, dprt)
-    if t == "DPW" and claims.get("role") not in ("SUPER_ADMIN", "ADMIN_DPW"):
-        return jsonify(error="Wilayah DPW hanya dapat diakses oleh admin DPW atau Super Admin"), 403
+    if claims.get("role") not in TERRITORIAL_MANAGER_ROLES:
+        return jsonify(error="Matriks struktur hanya dapat diakses oleh Super Admin, Ketua Wilayah, dan Admin Delegasi."), 403
+    if t == "DPW" and claims.get("role") not in ("SUPER_ADMIN", "KETUA_DPW", "ADMIN_DPW"):
+        return jsonify(error="Wilayah DPW hanya dapat diakses oleh Ketua/Admin DPW atau Super Admin"), 403
     if not in_scope(claims, c_dpd, c_dpc, c_dprt):
         return jsonify(error="Wilayah di luar cakupan akses akun Anda"), 403
 
@@ -602,6 +604,8 @@ def sync_territory_structure_slots():
         return jsonify(error="Field 'rows' wajib berupa array"), 400
 
     t, c_dpd, c_dpc, c_dprt = _normalize_territory_params(tingkat, dpd, dpc, dprt)
+    if claims.get("role") not in TERRITORIAL_MANAGER_ROLES:
+        return jsonify(error="Pengurus tidak berwenang mengubah matriks struktur."), 403
     if not in_scope(claims, c_dpd, c_dpc, c_dprt):
         return jsonify(error="Wilayah di luar cakupan akses akun Anda"), 403
 
@@ -674,6 +678,8 @@ def reset_territory_structure_slots():
     dprt = data.get("dprt", "")
 
     t, c_dpd, c_dpc, c_dprt = _normalize_territory_params(tingkat, dpd, dpc, dprt)
+    if claims.get("role") not in TERRITORIAL_MANAGER_ROLES:
+        return jsonify(error="Pengurus tidak berwenang mengubah matriks struktur."), 403
     if not in_scope(claims, c_dpd, c_dpc, c_dprt):
         return jsonify(error="Wilayah di luar cakupan akses akun Anda"), 403
 

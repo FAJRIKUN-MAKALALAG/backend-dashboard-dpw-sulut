@@ -49,7 +49,7 @@ def get_available_support_admins():
 
     rows = (
         AppUser.query.filter(
-            AppUser.role.in_(["SUPER_ADMIN", "ADMIN_DPW"]),
+            AppUser.role.in_(["SUPER_ADMIN", "KETUA_DPW", "ADMIN_DPW"]),
             AppUser.is_active == True,
         )
         .order_by(AppUser.role.asc(), AppUser.full_name.asc())

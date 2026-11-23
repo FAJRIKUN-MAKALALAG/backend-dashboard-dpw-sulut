@@ -1,5 +1,7 @@
+import uuid
+
 from flask import Blueprint, jsonify, request
-from flask_jwt_extended import create_access_token
+from flask_jwt_extended import create_access_token, get_jwt_identity
 from sqlalchemy import func
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -8,15 +10,39 @@ from app.auth import current_claims, login_required
 from app.cache import invalidate_all_data_cache
 from app.extensions import db
 from app.models import AppUser, Member, Position
-from app.utils import find_member_by_nik_or_incomplete_match, rename_member_nik_safely
+from app.services.referral_service import is_ketua_position
+from app.utils import (
+    DELEGATED_ADMIN_ROLES,
+    DPC_ROLES,
+    DPD_ROLES,
+    DPRT_ROLES,
+    DPW_ROLES,
+    TERRITORIAL_ROLES,
+    find_member_by_nik_or_incomplete_match,
+    rename_member_nik_safely,
+)
 
 bp = Blueprint("auth", __name__)
 
 
+def _is_member_ketua_at_level(member: Member | None, target_level: str) -> bool:
+    if not member:
+        return False
+    norm_target = "DPRT" if target_level in ("DPRT", "RANTING") else target_level
+    if member.positions:
+        for p in member.positions:
+            p_lvl = (p.tingkat_kepengurusan or "").strip().upper()
+            p_norm = "DPRT" if p_lvl in ("DPRT", "RANTING") else p_lvl
+            if p_norm == norm_target and is_ketua_position(p.jabatan or ""):
+                return True
+    return is_ketua_position(member.jabatan or "")
+
+
 def determine_role(member_or_tingkat, member: Member = None) -> str:
-    """Memetakan status kepengurusan ke level hak akses (Role) sistem.
-    Hanya pengurus struktural ber-SK yang mendapatkan role Admin (DPW, DPD, DPC, DPRt).
-    Anggota biasa yang belum/tidak memiliki SK resmi mendapatkan role 'ANGGOTA'."""
+    """Memetakan status kepengurusan ke level hak akses (Role) sistem 3-lapis.
+    - Ketua resmi ber-SK mendapat role KETUA_DPW/DPD/DPC/DPRT.
+    - Pengurus struktural ber-SK non-Ketua mendapat role PENGURUS_DPW/DPD/DPC/DPRT.
+    - Anggota biasa tanpa SK resmi mendapatkan role 'ANGGOTA'."""
     m = member_or_tingkat if isinstance(member_or_tingkat, Member) else member
     tingkat = member_or_tingkat.tingkat_kepengurusan if isinstance(member_or_tingkat, Member) else member_or_tingkat
 
@@ -30,15 +56,27 @@ def determine_role(member_or_tingkat, member: Member = None) -> str:
     if not has_sk or t in ("BUKAN PENGURUS", "ANGGOTA", "KADER", "-", ""):
         return "ANGGOTA"
 
+    is_ketua = _is_member_ketua_at_level(m, t)
+
     if t == "DPW":
-        return "ADMIN_DPW"
+        return "KETUA_DPW" if is_ketua else "PENGURUS_DPW"
     elif t == "DPD":
-        return "ADMIN_DPD"
+        return "KETUA_DPD" if is_ketua else "PENGURUS_DPD"
     elif t == "DPC":
-        return "ADMIN_DPC"
+        return "KETUA_DPC" if is_ketua else "PENGURUS_DPC"
     elif t in ("DPRT", "RANTING"):
-        return "ADMIN_DPRT"
+        return "KETUA_DPRT" if is_ketua else "PENGURUS_DPRT"
     return "ANGGOTA"
+
+
+def _normalize_app_user_role(u: AppUser) -> str:
+    role = (u.role or "ANGGOTA").strip().upper()
+    if role == "INVENTORY":
+        return "ADMIN_INVENTORY"
+    if role in ("ADMIN_DPW", "ADMIN_DPD", "ADMIN_DPC", "ADMIN_DPRT"):
+        if is_ketua_position(u.jabatan or "") and not u.delegated_for_ketua_nik:
+            return role.replace("ADMIN_", "KETUA_", 1)
+    return role
 
 
 def claims_for(u: AppUser) -> dict:
@@ -46,8 +84,10 @@ def claims_for(u: AppUser) -> dict:
     dpc_acc = u.dpc_access or "ALL"
     dprt_acc = u.dprt_access or "ALL"
 
+    normalized_role = _normalize_app_user_role(u)
+
     # Peran DPC: dpc_access WAJIB spesifik ke kecamatannya, tidak boleh ALL
-    if u.role == "ADMIN_DPC":
+    if normalized_role in DPC_ROLES:
         dprt_acc = "ALL"  # Membawahi seluruh DPRt di kecamatannya
         if not dpc_acc or dpc_acc in ("ALL", "Umum (DPD)", "-", ""):
             pos_dpc = Position.query.filter(
@@ -74,7 +114,7 @@ def claims_for(u: AppUser) -> dict:
                         db.session.rollback()
 
     # Peran DPRt: dpc_access dan dprt_access WAJIB spesifik
-    elif u.role == "ADMIN_DPRT":
+    elif normalized_role in DPRT_ROLES:
         if not dprt_acc or dprt_acc in ("ALL", "Pusat/Umum", "-", "") or not dpc_acc or dpc_acc in ("ALL", "Umum (DPD)", "-", ""):
             pos_dprt = Position.query.filter(
                 Position.member_nik == u.member_nik,
@@ -95,20 +135,16 @@ def claims_for(u: AppUser) -> dict:
                     db.session.rollback()
 
     # Peran DPD membawahi SELURUH DPC dan DPRt di DPD-nya
-    elif u.role == "ADMIN_DPD":
+    elif normalized_role in DPD_ROLES:
         dpc_acc = "ALL"
         dprt_acc = "ALL"
-    elif u.role in ("SUPER_ADMIN", "ADMIN_DPW", "ADMIN_INVENTORY", "INVENTORY", "WAKIL_BENDAHARA"):
+    elif normalized_role in (("SUPER_ADMIN", "ADMIN_INVENTORY", "WAKIL_BENDAHARA") + DPW_ROLES):
         dpd_acc = "ALL"
         dpc_acc = "ALL"
         dprt_acc = "ALL"
 
-    normalized_role = "ADMIN_INVENTORY" if u.role == "INVENTORY" else u.role
-
-    # Hanya Super Admin dan Pengurus struktural ber-SK yang berwenang menambahkan anggota baru
-    is_structural_leader = bool(
-        normalized_role in ("SUPER_ADMIN", "ADMIN_DPW", "ADMIN_DPD", "ADMIN_DPC", "ADMIN_DPRT")
-    )
+    # Hanya Super Admin dan Pengurus struktural ber-SK / Delegasi yang berwenang menambahkan anggota baru
+    is_structural_actor = bool(normalized_role in (("SUPER_ADMIN",) + TERRITORIAL_ROLES))
 
     default_jabatan = (
         "Admin Inventaris Kantor DPW Sulut"
@@ -116,7 +152,7 @@ def claims_for(u: AppUser) -> dict:
         else (
             "Wakil Bendahara DPW Sulut"
             if normalized_role == "WAKIL_BENDAHARA"
-            else ("Anggota Biasa" if normalized_role == "ANGGOTA" else f"Admin {normalized_role}")
+            else ("Anggota Biasa" if normalized_role == "ANGGOTA" else f"Pengurus {normalized_role}")
         )
     )
 
@@ -128,8 +164,10 @@ def claims_for(u: AppUser) -> dict:
         "adminName": u.full_name,
         "adminNik": u.member_nik or u.username,
         "jabatan": u.jabatan or default_jabatan,
-        "canAddMembers": is_structural_leader,
-        "hasSk": is_structural_leader,
+        "canAddMembers": is_structural_actor,
+        "hasSk": is_structural_actor,
+        "isDelegatedAdmin": normalized_role in DELEGATED_ADMIN_ROLES,
+        "delegatedForKetuaNik": u.delegated_for_ketua_nik,
     }
 
 
@@ -139,7 +177,7 @@ def resolve_territory_access(member: Member, user_role: str):
     dprt = member.dprt or "ALL"
     jabatan = member.jabatan or f"Pengurus {member.tingkat_kepengurusan}"
 
-    if user_role == "ADMIN_DPC":
+    if user_role in DPC_ROLES:
         pos_dpc = next(
             (
                 p
@@ -154,7 +192,7 @@ def resolve_territory_access(member: Member, user_role: str):
                 jabatan = pos_dpc.jabatan
         elif dpc in ("Umum (DPD)", "-", ""):
             dpc = "ALL"
-    elif user_role == "ADMIN_DPRT":
+    elif user_role in DPRT_ROLES:
         pos_dprt = next(
             (
                 p
@@ -174,25 +212,13 @@ def resolve_territory_access(member: Member, user_role: str):
     return dpd, dpc, dprt, jabatan
 
 
-def _matches_default_password(password: str, *nik_or_ekta_candidates: str) -> bool:
-    if password == "nasdem123":
-        return True
-    for raw_val in nik_or_ekta_candidates:
-        val = (raw_val or "").strip()
-        if len(val) >= 6 and password == val[-6:]:
-            return True
-        if len(val) >= 4 and password == f"Nasdem@{val[-4:]}":
-            return True
-    return False
-
-
 @bp.post("/auth/login")
 def login():
     """
-    Login sistem Partai NasDem Sulut (ketat berbasis NIK / Nomor e-KTA):
-    - Akun Super Admin / Pengurus yang sudah punya password custom -> langsung diverifikasi.
-    - Mendukung login baik menggunakan NIK tersimpan (<16 digit hasil impor Excel) maupun 16 digit NIK KTP asli
-      (otomatis menyelaraskan NIK <16 digit ke 16 digit KTP bila cocok tunggal & kata sandi valid).
+    Login sistem Partai NasDem Sulut (ketat berbasis NIK / Nomor e-KTA / Username):
+    - Setiap akun aktif di AppUser diverifikasi ketat terhadap hash kata sandi pribadinya.
+    - Tidak ada kata sandi bawaan universal (seperti 'nasdem123') yang dapat melewati kata sandi pengguna.
+    - Pengurus yang belum memiliki akun aktif di AppUser harus melakukan aktivasi mandiri terlebih dahulu.
     """
     data = request.get_json(silent=True) or {}
     raw_ident = (data.get("username") or "").strip()
@@ -218,16 +244,9 @@ def login():
         if not user.is_active:
             return jsonify(error="Akun dinonaktifkan oleh Super Administrator. Hubungi DPW."), 403
 
-        pwd_match = check_password_hash(user.password_hash, password)
-        if not pwd_match:
-            if _matches_default_password(password, user.member_nik, user.username, user.nomor_ekta):
-                user.password_hash = generate_password_hash(password)
-                db.session.commit()
-                pwd_match = True
-
-        if not pwd_match:
+        if not user.password_hash or not check_password_hash(user.password_hash, password):
             return jsonify(
-                error="Kata sandi salah. Silakan periksa kembali kata sandi Anda atau gunakan menu 'Aktivasi Pengurus'."
+                error="Kata sandi salah. Silakan periksa kembali kata sandi Anda."
             ), 401
 
         claims = claims_for(user)
@@ -253,16 +272,11 @@ def login():
         if not existing_member_user.is_active:
             return jsonify(error="Akun dinonaktifkan oleh Super Administrator. Hubungi DPW."), 403
 
-        pwd_match = check_password_hash(existing_member_user.password_hash, password)
-        if not pwd_match and _matches_default_password(
-            password, existing_member_user.member_nik, clean_ident, member.nomor_ekta
+        if not existing_member_user.password_hash or not check_password_hash(
+            existing_member_user.password_hash, password
         ):
-            existing_member_user.password_hash = generate_password_hash(password)
-            pwd_match = True
-
-        if not pwd_match:
             return jsonify(
-                error="Kata sandi salah. Silakan periksa kembali kata sandi Anda atau gunakan menu 'Aktivasi Pengurus'."
+                error="Kata sandi salah. Silakan periksa kembali kata sandi Anda."
             ), 401
 
         target_user_id = existing_member_user.id
@@ -279,41 +293,10 @@ def login():
         )
         return jsonify(token=token, session=claims)
 
-    # 3. Pengurus belum punya akun AppUser -> verifikasi default password
-    if not _matches_default_password(password, member.nik, clean_ident, member.nomor_ekta):
-        return jsonify(
-            error="Kata sandi salah. Silakan periksa kembali kata sandi Anda atau gunakan menu 'Aktivasi Pengurus'."
-        ), 401
-
-    if should_heal_nik:
-        member = rename_member_nik_safely(db.session, member, clean_ident)
-        invalidate_all_data_cache()
-
-    user_role = determine_role(member)
-    dpd_val, dpc_val, dprt_val, jab_val = resolve_territory_access(member, user_role)
-    new_user = AppUser(
-        member_nik=member.nik,
-        nomor_ekta=member.nomor_ekta,
-        username=member.nik,
-        password_hash=generate_password_hash(password),
-        full_name=member.nama_lengkap,
-        role=user_role,
-        dpd_access=dpd_val,
-        dpc_access=dpc_val,
-        dprt_access=dprt_val,
-        jabatan=jab_val,
-        is_active=True,
-    )
-    db.session.add(new_user)
-    db.session.commit()
-
-    claims = claims_for(new_user)
-    token = create_access_token(
-        identity=str(new_user.id),
-        additional_claims=claims,
-        expires_delta=get_config().JWT_ACCESS_TOKEN_EXPIRES,
-    )
-    return jsonify(token=token, session=claims, isDefaultPassword=True)
+    # 3. Member belum pernah diaktivasi di AppUser -> wajib aktivasi melalui tab Aktivasi Pengurus
+    return jsonify(
+        error="Akun untuk NIK ini belum diaktivasi. Silakan gunakan tab 'Aktivasi Pengurus' terlebih dahulu untuk membuat kata sandi pribadi Anda."
+    ), 401
 
 
 @bp.post("/auth/check-pengurus")
@@ -372,11 +355,20 @@ def activate_pengurus():
     if not member:
         return jsonify(error="Data pengurus dengan NIK tersebut tidak ditemukan di database"), 404
 
+    # Cegah pengambilalihan akun jika AppUser sudah aktif dan sudah memiliki kata sandi
+    existing_user = AppUser.query.filter(
+        (AppUser.member_nik == member.nik) | (func.lower(AppUser.username) == member.nik.lower())
+    ).first()
+    if existing_user and existing_user.password_hash:
+        return jsonify(
+            error="Akun ini sudah aktif dan memiliki kata sandi. Silakan masuk melalui tab Login, ubah kata sandi dari menu Profil setelah login, atau hubungi Super Admin DPW jika lupa kata sandi."
+        ), 409
+
     if should_heal_nik:
         member = rename_member_nik_safely(db.session, member, clean_ident)
         invalidate_all_data_cache()
 
-    # Cari apakah sudah ada AppUser
+    # Cari ulang AppUser bila ada (mis. belum punya password_hash)
     user = AppUser.query.filter(
         (AppUser.member_nik == member.nik) | (func.lower(AppUser.username) == member.nik.lower())
     ).first()
@@ -429,6 +421,51 @@ def activate_pengurus():
     )
 
 
+@bp.post("/auth/change-password")
+@login_required
+def change_password():
+    """Mengubah kata sandi akun sendiri dengan konfirmasi kata sandi lama."""
+    data = request.get_json(silent=True) or {}
+    old_password = (data.get("oldPassword") or "").strip()
+    new_password = (data.get("newPassword") or "").strip()
+    confirm_password = (data.get("confirmPassword") or "").strip()
+
+    if not old_password or not new_password or not confirm_password:
+        return jsonify(error="Kata sandi lama, kata sandi baru, dan konfirmasi kata sandi wajib diisi."), 400
+    if len(new_password) < 6:
+        return jsonify(error="Kata sandi baru minimal 6 karakter."), 400
+    if new_password != confirm_password:
+        return jsonify(error="Konfirmasi kata sandi baru tidak cocok."), 400
+    if new_password == old_password:
+        return jsonify(error="Kata sandi baru tidak boleh sama dengan kata sandi lama."), 400
+
+    claims = current_claims()
+    uid = get_jwt_identity()
+    user = None
+    if uid:
+        try:
+            user = db.session.get(AppUser, uuid.UUID(str(uid)))
+        except (ValueError, TypeError):
+            user = None
+
+    if user is None:
+        ident = (claims.get("adminNik") or "").strip()
+        if ident:
+            user = AppUser.query.filter(
+                (AppUser.member_nik == ident) | (func.lower(AppUser.username) == ident.lower())
+            ).first()
+
+    if user is None:
+        return jsonify(error="Akun pengguna tidak ditemukan."), 404
+
+    if not user.password_hash or not check_password_hash(user.password_hash, old_password):
+        return jsonify(error="Kata sandi lama yang Anda masukkan salah."), 400
+
+    user.password_hash = generate_password_hash(new_password)
+    db.session.commit()
+    return jsonify(message="Kata sandi berhasil diperbarui.")
+
+
 @bp.post("/auth/refresh")
 @login_required
 def refresh_session():
@@ -447,5 +484,17 @@ def refresh_session():
 @login_required
 def me():
     c = current_claims()
-    keys = ("role", "dpdAccess", "dpcAccess", "dprtAccess", "adminName", "adminNik", "jabatan")
+    keys = (
+        "role",
+        "dpdAccess",
+        "dpcAccess",
+        "dprtAccess",
+        "adminName",
+        "adminNik",
+        "jabatan",
+        "canAddMembers",
+        "hasSk",
+        "isDelegatedAdmin",
+        "delegatedForKetuaNik",
+    )
     return jsonify(session={k: c.get(k) for k in keys})

@@ -4,43 +4,57 @@ from werkzeug.security import generate_password_hash
 from app.auth import super_admin_required
 from app.extensions import db
 from app.models import AppUser
-from app.utils import row_to_dict
+from app.utils import DELEGATED_ADMIN_ROLES, DPC_ROLES, DPRT_ROLES, DPW_ROLES, row_to_dict
 
 bp = Blueprint("users", __name__)
 
 ROLES = (
     "SUPER_ADMIN",
+    "KETUA_DPW",
+    "KETUA_DPD",
+    "KETUA_DPC",
+    "KETUA_DPRT",
     "ADMIN_DPW",
     "ADMIN_DPD",
     "ADMIN_DPC",
     "ADMIN_DPRT",
+    "PENGURUS_DPW",
+    "PENGURUS_DPD",
+    "PENGURUS_DPC",
+    "PENGURUS_DPRT",
     "ADMIN_INVENTORY",
     "WAKIL_BENDAHARA",
 )
 USER_FIELDS = {
     "id": "id", "member_nik": "memberNik", "nomor_ekta": "nomorEkta", "username": "username",
     "full_name": "fullName", "role": "role", "dpd_access": "dpdAccess", "dpc_access": "dpcAccess",
-    "dprt_access": "dprtAccess", "jabatan": "jabatan", "is_active": "isActive",
+    "dprt_access": "dprtAccess", "jabatan": "jabatan",
+    "delegated_for_ketua_nik": "delegatedForKetuaNik", "is_active": "isActive",
     "created_at": "createdAt", "updated_at": "updatedAt",
 }  # password_hash sengaja TIDAK pernah dikirim ke klien
 INPUT_MAP = {
     "memberNik": "member_nik", "nomorEkta": "nomor_ekta", "username": "username", "fullName": "full_name",
     "role": "role", "dpdAccess": "dpd_access", "dpcAccess": "dpc_access", "dprtAccess": "dprt_access",
-    "jabatan": "jabatan", "isActive": "is_active",
+    "jabatan": "jabatan", "delegatedForKetuaNik": "delegated_for_ketua_nik", "isActive": "is_active",
 }
 
 
 def _apply(user: AppUser, data: dict):
     for camel, col in INPUT_MAP.items():
         if camel in data:
-            setattr(user, col, data[camel])
+            val = data[camel]
+            if col == "delegated_for_ketua_nik":
+                val = (str(val).strip() or None) if val is not None else None
+            setattr(user, col, val)
     if user.role == "INVENTORY":
         user.role = "ADMIN_INVENTORY"
-    if user.role in ("ADMIN_INVENTORY", "WAKIL_BENDAHARA"):
+    if user.role not in DELEGATED_ADMIN_ROLES:
+        user.delegated_for_ketua_nik = None
+    if user.role in (("SUPER_ADMIN", "ADMIN_INVENTORY", "WAKIL_BENDAHARA") + DPW_ROLES):
         user.dpd_access = "ALL"
         user.dpc_access = "ALL"
         user.dprt_access = "ALL"
-        if not user.jabatan:
+        if user.role in ("ADMIN_INVENTORY", "WAKIL_BENDAHARA") and not user.jabatan:
             user.jabatan = (
                 "Admin Inventaris Kantor DPW Sulut"
                 if user.role == "ADMIN_INVENTORY"
@@ -69,13 +83,13 @@ def create_user():
         data["role"] = "ADMIN_INVENTORY"
     if role not in ROLES:
         return jsonify(error="Role tidak valid"), 400
-    if role == "ADMIN_DPC" and (not data.get("dpcAccess") or data.get("dpcAccess") == "ALL"):
-        return jsonify(error="Akun Admin DPC wajib memilih wilayah Kecamatan (DPC) spesifik."), 400
-    if role == "ADMIN_DPRT":
+    if role in DPC_ROLES and (not data.get("dpcAccess") or data.get("dpcAccess") == "ALL"):
+        return jsonify(error=f"Akun {role} wajib memilih wilayah Kecamatan (DPC) spesifik."), 400
+    if role in DPRT_ROLES:
         if not data.get("dpcAccess") or data.get("dpcAccess") == "ALL":
-            return jsonify(error="Akun Admin DPRt wajib memilih wilayah Kecamatan (DPC)."), 400
+            return jsonify(error=f"Akun {role} wajib memilih wilayah Kecamatan (DPC)."), 400
         if not data.get("dprtAccess") or data.get("dprtAccess") == "ALL":
-            return jsonify(error="Akun Admin DPRt wajib memilih wilayah Desa/Kelurahan (DPRt) spesifik."), 400
+            return jsonify(error=f"Akun {role} wajib memilih wilayah Desa/Kelurahan (DPRt) spesifik."), 400
     if AppUser.query.filter_by(username=data["username"].strip()).first():
         return jsonify(error="Username sudah dipakai"), 409
     u = AppUser()
@@ -101,13 +115,13 @@ def update_user(uid):
         data["role"] = "ADMIN_INVENTORY"
     if "role" in data and role not in ROLES:
         return jsonify(error="Role tidak valid"), 400
-    if role == "ADMIN_DPC" and ("dpcAccess" in data and (not data.get("dpcAccess") or data.get("dpcAccess") == "ALL")):
-        return jsonify(error="Akun Admin DPC wajib memilih wilayah Kecamatan (DPC) spesifik."), 400
-    if role == "ADMIN_DPRT":
+    if role in DPC_ROLES and ("dpcAccess" in data and (not data.get("dpcAccess") or data.get("dpcAccess") == "ALL")):
+        return jsonify(error=f"Akun {role} wajib memilih wilayah Kecamatan (DPC) spesifik."), 400
+    if role in DPRT_ROLES:
         if "dpcAccess" in data and (not data.get("dpcAccess") or data.get("dpcAccess") == "ALL"):
-            return jsonify(error="Akun Admin DPRt wajib memilih wilayah Kecamatan (DPC)."), 400
+            return jsonify(error=f"Akun {role} wajib memilih wilayah Kecamatan (DPC)."), 400
         if "dprtAccess" in data and (not data.get("dprtAccess") or data.get("dprtAccess") == "ALL"):
-            return jsonify(error="Akun Admin DPRt wajib memilih wilayah Desa/Kelurahan (DPRt) spesifik."), 400
+            return jsonify(error=f"Akun {role} wajib memilih wilayah Desa/Kelurahan (DPRt) spesifik."), 400
     _apply(u, data)
     db.session.commit()
     return jsonify(row_to_dict(u, USER_FIELDS))

@@ -194,6 +194,7 @@ class AppUser(db.Model):
     dpc_access = db.Column(db.String(100), default="ALL")
     dprt_access = db.Column(db.String(100), default="ALL")
     jabatan = db.Column(db.String(150))
+    delegated_for_ketua_nik = db.Column(db.String(50), index=True)
     is_active = db.Column(db.Boolean, default=True)
     created_at = db.Column(db.DateTime(timezone=True), server_default=func.now())
     updated_at = db.Column(db.DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

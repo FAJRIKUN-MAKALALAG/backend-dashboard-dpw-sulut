@@ -11,10 +11,13 @@ from app.services.referral_service import find_direct_leader
 from app.services.image_storage import intercept_and_store_member_photos, delete_physical_image
 from app.dpp_integration import get_dpp_client
 from app.utils import (
+    DELETION_APPROVER_ROLES,
     HEAVY_COLS,
+    PENGURUS_ROLES,
     POSITION_COLS,
     STATUS_VALUES,
     SUMMARY_COLS,
+    TERRITORIAL_MANAGER_ROLES,
     apply_scope,
     in_scope,
     is_acceptable_nik,
@@ -179,13 +182,15 @@ def check_tingkat_permission(role: str, tingkat: str) -> bool:
     t = (tingkat or "").strip().upper()
     if not t or t in ("BUKAN PENGURUS", "UMUM", "-", ""):
         return True
-    if role in ("SUPER_ADMIN", "ADMIN_DPW"):
+    if role in PENGURUS_ROLES:
+        return False
+    if role in ("SUPER_ADMIN", "KETUA_DPW", "ADMIN_DPW"):
         return True
-    if role == "ADMIN_DPD":
+    if role in ("KETUA_DPD", "ADMIN_DPD"):
         return t in ("DPD", "DPC", "DPRT", "RANTING")
-    if role == "ADMIN_DPC":
+    if role in ("KETUA_DPC", "ADMIN_DPC"):
         return t in ("DPC", "DPRT", "RANTING")
-    if role == "ADMIN_DPRT":
+    if role in ("KETUA_DPRT", "ADMIN_DPRT"):
         return t in ("DPRT", "RANTING")
     return False
 
@@ -194,8 +199,9 @@ def check_tingkat_permission(role: str, tingkat: str) -> bool:
 @login_required
 def create_member():
     claims = current_claims()
-    # Pembatasan: Anggota biasa tidak berwenang menambah anggota baru. Hanya pengurus resmi ber-SK.
-    if claims.get("role") == "ANGGOTA" or not claims.get("canAddMembers", True):
+    role = claims.get("role")
+    # Pembatasan: Anggota biasa, Inventory, dan Wakil Bendahara tidak berwenang menambah anggota baru.
+    if role in ("ANGGOTA", "ADMIN_INVENTORY", "INVENTORY", "WAKIL_BENDAHARA") or not claims.get("canAddMembers", True):
         return jsonify(error="Hanya pengurus resmi pemegang SK yang berwenang menambahkan anggota baru."), 403
 
     raw_payload = request.get_json(silent=True) or {}
@@ -211,9 +217,22 @@ def create_member():
     if not in_scope(claims, values["dpd"], values["dpc"], values["dprt"]):
         return jsonify(error="Wilayah di luar cakupan akses akun Anda"), 403
 
-    tingkat = values.get("tingkat_kepengurusan")
-    if not check_tingkat_permission(claims.get("role"), tingkat):
-        return jsonify(error=f"Akun Anda tidak memiliki wewenang untuk menetapkan tingkat kepengurusan {tingkat}"), 403
+    # Pengurus non-Ketua hanya boleh mendaftarkan anggota biasa (rekrutmen), tidak mengangkat jabatan struktural SK
+    if role in PENGURUS_ROLES:
+        values["is_pengurus"] = False
+        values["tingkat_kepengurusan"] = "Bukan Pengurus"
+        values["wilayah_penugasan"] = None
+        values["jabatan"] = "Anggota Biasa"
+        values["nomor_sk"] = None
+        values["tanggal_sk"] = None
+        values["urutan"] = None
+        if not values.get("kader_perekrut_kode_referral") and not values.get("kader_perekrut_nik"):
+            if claims.get("adminNik"):
+                values["kader_perekrut_nik"] = str(claims.get("adminNik"))
+    else:
+        tingkat = values.get("tingkat_kepengurusan")
+        if not check_tingkat_permission(role, tingkat):
+            return jsonify(error=f"Akun Anda tidak memiliki wewenang untuk menetapkan tingkat kepengurusan {tingkat}"), 403
 
     if db.session.get(Member, nik):
         return jsonify(error="NIK sudah terdaftar"), 409
@@ -260,6 +279,10 @@ def create_member():
 @login_required
 def update_member(nik):
     claims = current_claims()
+    if claims.get("role") not in TERRITORIAL_MANAGER_ROLES:
+        return jsonify(
+            error="Pengurus hanya dapat mengubah data profil dirinya sendiri melalui menu Portal Pengurus."
+        ), 403
     clean_nik = str(nik).strip()
     m = db.session.get(Member, clean_nik)
     if not m:
@@ -441,6 +464,10 @@ def update_my_profile():
 @login_required
 def change_status(nik):
     claims = current_claims()
+    if claims.get("role") not in TERRITORIAL_MANAGER_ROLES:
+        return jsonify(
+            error="Pengurus hanya dapat mengubah data profil dirinya sendiri melalui menu Portal Pengurus."
+        ), 403
     clean_nik = str(nik).strip()
     m = db.session.get(Member, clean_nik)
     if not m:
@@ -467,12 +494,12 @@ def change_status(nik):
 @bp.delete("/members/<nik>")
 @login_required
 def delete_member(nik):
-    """Hapus orang beserta seluruh jabatannya: Super Admin & Admin DPW memiliki hak penuh langsung."""
+    """Hapus orang beserta seluruh jabatannya: HANYA Super Admin & Ketua DPW yang memiliki hak penuh langsung."""
     claims = current_claims()
     role = claims.get("role")
-    if role not in ("SUPER_ADMIN", "ADMIN_DPW"):
+    if role not in DELETION_APPROVER_ROLES:
         return jsonify(
-            error="Hanya Super Admin dan Admin DPW yang memiliki wewenang untuk menghapus kader secara langsung. Pengurus DPD/DPC/DPRt silakan gunakan fitur Pengajuan Penghapusan."
+            error="Hanya Super Admin dan Ketua DPW yang memiliki wewenang untuk menghapus kader secara langsung. Silakan gunakan fitur Pengajuan Penghapusan."
         ), 403
 
     clean_nik = str(nik).strip()
@@ -632,6 +659,10 @@ def _upsert_rows(raw_rows, claims, replace_territory_suborgs: bool = False):
 def bulk_upsert():
     """Import massal. Orang disimpan sekali per NIK; jabatan disimpan terpisah (tanpa saling menimpa)."""
     claims = current_claims()
+    if claims.get("role") not in TERRITORIAL_MANAGER_ROLES:
+        return jsonify(
+            error="Hanya Super Admin, Ketua Wilayah, dan Admin Delegasi yang berwenang melakukan import massal."
+        ), 403
     body = request.get_json(silent=True) or {}
     rows = body.get("members")
     replace_territory_suborgs = bool(body.get("replaceTerritorySubOrgs"))
@@ -667,6 +698,10 @@ def bulk_delete():
     - `niks`: hapus ORANG beserta seluruh jabatannya (dalam cakupan wilayah akun).
     """
     claims = current_claims()
+    if claims.get("role") not in TERRITORIAL_MANAGER_ROLES:
+        return jsonify(
+            error="Hanya Super Admin, Ketua Wilayah, dan Admin Delegasi yang berwenang melakukan penghapusan massal."
+        ), 403
     body = request.get_json(silent=True) or {}
     position_ids = [str(x).strip() for x in (body.get("positionIds") or []) if str(x).strip()]
     niks = [str(n).strip() for n in (body.get("niks") or []) if str(n).strip()]

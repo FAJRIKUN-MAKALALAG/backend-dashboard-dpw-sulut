@@ -7,12 +7,69 @@ from app.extensions import db
 from app.models import Member, AppUser
 from app.services.referral_service import (
     find_direct_leader,
+    find_ketua_dpc,
+    find_ketua_dpd,
+    find_ketua_dprt,
+    find_ketua_dpw,
     generate_unique_referral_code,
     is_ketua_position,
 )
-from app.utils import member_to_dict
+from app.utils import (
+    DELEGATED_ADMIN_ROLES,
+    TERRITORIAL_MANAGER_ROLES,
+    member_to_dict,
+)
 
 bp = Blueprint("referrals", __name__)
+
+
+def resolve_delegated_ketua(claims: dict, own_member: Member | None) -> dict | None:
+    """Mengambil profil & kode referral Ketua Wilayah bagi akun Admin Delegasi/Kepercayaan Ketua."""
+    role = claims.get("role")
+    if role not in DELEGATED_ADMIN_ROLES:
+        return None
+
+    ketua_member = None
+    explicit_nik = (claims.get("delegatedForKetuaNik") or "").strip()
+    if not explicit_nik and claims.get("sub"):
+        try:
+            import uuid as _uuid_lib
+            _uuid_lib.UUID(str(claims.get("sub")))
+            u = db.session.get(AppUser, claims.get("sub"))
+            if u and u.delegated_for_ketua_nik:
+                explicit_nik = u.delegated_for_ketua_nik.strip()
+        except (ValueError, TypeError):
+            pass
+
+    if explicit_nik:
+        ketua_member = Member.query.filter(Member.nik == explicit_nik).first()
+
+    if not ketua_member:
+        dpd_acc = (claims.get("dpdAccess") or "").strip()
+        dpc_acc = (claims.get("dpcAccess") or "").strip()
+        dprt_acc = (claims.get("dprtAccess") or "").strip()
+        if role == "ADMIN_DPW":
+            ketua_member = find_ketua_dpw()
+        elif role == "ADMIN_DPD" and dpd_acc and dpd_acc != "ALL":
+            ketua_member = find_ketua_dpd(dpd_acc)
+        elif role == "ADMIN_DPC" and dpd_acc and dpc_acc and dpc_acc != "ALL":
+            ketua_member = find_ketua_dpc(dpd_acc, dpc_acc)
+        elif role == "ADMIN_DPRT" and dpd_acc and dpc_acc and dprt_acc and dprt_acc != "ALL":
+            ketua_member = find_ketua_dprt(dpd_acc, dpc_acc, dprt_acc)
+
+    if not ketua_member:
+        return None
+    if own_member and str(ketua_member.nik) == str(own_member.nik):
+        return None
+
+    code = generate_unique_referral_code(ketua_member)
+    return {
+        "nik": ketua_member.nik,
+        "nama": ketua_member.nama_lengkap,
+        "jabatan": ketua_member.jabatan or f"Ketua {ketua_member.tingkat_kepengurusan or ''}".strip(),
+        "tingkat": ketua_member.tingkat_kepengurusan or role.replace("ADMIN_", ""),
+        "kodeReferral": code,
+    }
 
 
 def get_current_member(claims):
@@ -61,25 +118,29 @@ def get_my_referral_code():
     m = get_current_member(claims)
 
     # Anggota biasa tanpa SK tidak memiliki kode referral & tidak memiliki rekrutmen
-    if claims.get("role") == "ANGGOTA":
+    role = claims.get("role", "ADMIN")
+    if role in ("ANGGOTA", "ADMIN_INVENTORY", "WAKIL_BENDAHARA"):
         return jsonify({
             "isMemberLinked": bool(m),
             "kodeReferral": None,
             "namaLengkap": m.nama_lengkap if m else claims.get("adminName"),
             "nik": m.nik if m else claims.get("adminNik"),
             "nomorEkta": m.nomor_ekta if m else None,
-            "jabatan": m.jabatan if m else "Kader / Anggota Biasa",
+            "jabatan": m.jabatan if m else ("Anggota Biasa" if role == "ANGGOTA" else role),
             "tingkatKepengurusan": "Bukan Pengurus",
             "dpd": m.dpd if m else claims.get("dpdAccess"),
             "dpc": m.dpc if m else "-",
             "dprt": m.dprt if m else "-",
             "ketuaLangsung": None,
+            "isDelegatedAdmin": False,
+            "delegatedKetua": None,
             "totalRecruits": 0,
         })
 
+    delegated_ketua = resolve_delegated_ketua(claims, m)
+
     if not m:
         # Fallback untuk akun Super Admin/Admin sistem yang belum ditautkan ke data anggota fisik
-        role = claims.get("role", "ADMIN")
         admin_name = claims.get("adminName", "Admin Partai NasDem")
         admin_nik = claims.get("adminNik", "ADMIN-01")
         code = f"NSD-{role[:3]}-SUPER"
@@ -109,6 +170,8 @@ def get_my_referral_code():
                 "jabatan": "Ketua Umum DPP",
                 "tingkat": "DPP",
             },
+            "isDelegatedAdmin": role in DELEGATED_ADMIN_ROLES,
+            "delegatedKetua": delegated_ketua,
             "totalRecruits": recruits_count,
         })
 
@@ -134,6 +197,8 @@ def get_my_referral_code():
         "dpc": m.dpc,
         "dprt": m.dprt,
         "ketuaLangsung": leader,
+        "isDelegatedAdmin": role in DELEGATED_ADMIN_ROLES,
+        "delegatedKetua": delegated_ketua,
         "totalRecruits": recruits_count,
     })
 
@@ -252,12 +317,13 @@ def referral_tracking():
         })
 
     m = get_current_member(claims)
+    role = claims.get("role")
+    delegated_ketua = resolve_delegated_ketua(claims, m)
 
     user_nik = m.nik if m else claims.get("adminNik")
     user_name = m.nama_lengkap if m else claims.get("adminName")
-    user_code = m.kode_referral if m else f"NSD-{claims.get('role', 'ADM')[:3]}-SUPER"
-    user_jabatan = m.jabatan if m else claims.get("jabatan", "")
-    is_ketua = is_ketua_position(user_jabatan) or claims.get("role") in ("SUPER_ADMIN", "ADMIN_DPW", "ADMIN_DPD")
+    user_code = m.kode_referral if m else f"NSD-{(role or 'ADM')[:3]}-SUPER"
+    is_ketua = role in TERRITORIAL_MANAGER_ROLES
 
     # 1. Perekrutan Langsung oleh Pengguna
     direct_query = Member.query.filter(
@@ -270,25 +336,35 @@ def referral_tracking():
     direct_recruits = direct_query.order_by(desc(Member.tanggal_bergabung), desc(Member.created_at)).limit(100).all()
     total_direct = direct_query.count()
 
-    # 2. Supervisi Ketua / Pimpinan (Rekap Tim)
+    # 2. Supervisi Ketua / Admin Delegasi (Rekap Tim Wilayah)
     team_recruits = []
     total_team = 0
     leaderboard = []
 
     if is_ketua:
-        # Jika Ketua, cari rekrutmen di mana ketua_langsung_nik adalah dia,
-        # ATAU (jika Admin DPD/DPW/DPC) rekrutmen di wilayah cakupannya
+        # Cari rekrutmen di mana ketua_langsung_nik adalah dia atau Ketua wilayahnya,
+        # ditambah seluruh rekrutmen ter-referral di wilayah cakupannya
         team_filter = [Member.ketua_langsung_nik == user_nik]
-        
-        # Tambahan filter wilayah jika admin daerah
+        if delegated_ketua and delegated_ketua.get("nik"):
+            team_filter.append(Member.ketua_langsung_nik == delegated_ketua["nik"])
+            team_filter.append(Member.kader_perekrut_nik == delegated_ketua["nik"])
+
         dpd_access = claims.get("dpdAccess")
         dpc_access = claims.get("dpcAccess")
+        dprt_access = claims.get("dprtAccess")
         if dpd_access and dpd_access != "ALL":
-            if dpc_access and dpc_access != "ALL":
+            if dprt_access and dprt_access != "ALL" and dpc_access and dpc_access != "ALL":
+                team_filter.append(
+                    (Member.dpd == dpd_access)
+                    & (Member.dpc == dpc_access)
+                    & (Member.dprt == dprt_access)
+                    & (Member.kader_perekrut_nama.isnot(None))
+                )
+            elif dpc_access and dpc_access != "ALL":
                 team_filter.append((Member.dpd == dpd_access) & (Member.dpc == dpc_access) & (Member.kader_perekrut_nama.isnot(None)))
             else:
                 team_filter.append((Member.dpd == dpd_access) & (Member.kader_perekrut_nama.isnot(None)))
-        elif claims.get("role") in ("SUPER_ADMIN", "ADMIN_DPW"):
+        elif role in ("SUPER_ADMIN", "KETUA_DPW", "ADMIN_DPW"):
             team_filter.append(Member.kader_perekrut_nama.isnot(None))
 
         team_q = Member.query.filter(or_(*team_filter))
@@ -333,6 +409,7 @@ def referral_tracking():
             "totalTeam": total_team,
             "isLeader": is_ketua,
         },
+        "delegatedKetua": delegated_ketua,
         "myRecruits": [member_to_dict(x, include_photos=False) for x in direct_recruits],
         "teamRecruits": [member_to_dict(x, include_photos=False) for x in team_recruits],
         "leaderboard": leaderboard,
