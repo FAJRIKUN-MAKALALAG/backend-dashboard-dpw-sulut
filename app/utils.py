@@ -463,6 +463,24 @@ def clean_region_name(name: str) -> str:
     return " ".join(n.split()).upper()
 
 
+def clean_dprt_name(name: str) -> str:
+    """Membersihkan nama DPRt (Desa/Kelurahan) sambil mempertahankan pembeda DESA vs KEL."""
+    if not name:
+        return ""
+    import re
+    s = str(name).strip().lower()
+    s = re.sub(r"^dprt\s+", "", s).strip()
+    kind = ""
+    if re.match(r"^(kelurahan|kel\.|kel)\s+", s):
+        kind = "KEL"
+        s = re.sub(r"^(kelurahan|kel\.|kel)\s+", "", s).strip()
+    elif re.match(r"^(desa|des\.|des)\s+", s):
+        kind = "DESA"
+        s = re.sub(r"^(desa|des\.|des)\s+", "", s).strip()
+    base = " ".join(re.sub(r"[^a-z0-9]", " ", s).split()).upper()
+    return f"{kind} {base}".strip() if kind and base else base
+
+
 
 def apply_scope(query, claims: dict, model=Member):
     if is_global(claims):
@@ -535,7 +553,7 @@ def in_scope(claims: dict, dpd=None, dpc=None, dprt=None) -> bool:
         dprt_want = (claims.get("dprtAccess") or "").strip()
         if not dprt_want or dprt_want in ("ALL", "Pusat/Umum", "-"):
             return False
-        if clean_region_name(dprt) != clean_region_name(dprt_want):
+        if clean_dprt_name(dprt) != clean_dprt_name(dprt_want):
             return False
 
     return True

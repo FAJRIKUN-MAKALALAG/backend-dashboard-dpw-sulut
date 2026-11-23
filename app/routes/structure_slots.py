@@ -176,6 +176,41 @@ def _extract_core_sql_token(val: str) -> str:
     return s
 
 
+_AMBIGUOUS_DPRT_BASES = {"rumoongbawah"}
+
+
+def _parse_dprt_kind_and_base(name: str):
+    s = (name or "").lower().strip()
+    if s.startswith("dprt "):
+        s = s[5:].strip()
+    kind = ""
+    for prefix in ("kelurahan ", "kel. ", "kel "):
+        if s.startswith(prefix):
+            kind = "kel"
+            s = s[len(prefix) :].strip()
+            break
+    if not kind:
+        for prefix in ("desa ", "des. ", "des "):
+            if s.startswith(prefix):
+                kind = "desa"
+                s = s[len(prefix) :].strip()
+                break
+    base = re.sub(r"[^a-z0-9]", "", s)
+    return kind, base
+
+
+def _dprt_matches(dprt_val: str, target_dprt: str) -> bool:
+    k1, b1 = _parse_dprt_kind_and_base(dprt_val)
+    k2, b2 = _parse_dprt_kind_and_base(target_dprt)
+    if not b1 or not b2 or b1 != b2:
+        return False
+    if k1 and k2:
+        return k1 == k2
+    if not k1 and not k2:
+        return True
+    return b1 not in _AMBIGUOUS_DPRT_BASES
+
+
 def _query_territory_positions(tingkat: str, dpd: str, dpc: str, dprt: str):
     q = Position.query.filter(Position.tingkat_kepengurusan == tingkat)
     if tingkat == "DPW":
@@ -194,7 +229,7 @@ def _query_territory_positions(tingkat: str, dpd: str, dpc: str, dprt: str):
 
     target_dpd = _clean_region_key(dpd)
     target_dpc = _clean_region_key(dpc)
-    target_dprt = _clean_region_key(dprt)
+    has_target_dprt = bool(_parse_dprt_kind_and_base(dprt)[1])
 
     matched = []
     for p in candidate_pos:
@@ -202,7 +237,7 @@ def _query_territory_positions(tingkat: str, dpd: str, dpc: str, dprt: str):
             continue
         if tingkat in ("DPC", "DPRt") and target_dpc and _clean_region_key(p.dpc) != target_dpc:
             continue
-        if tingkat == "DPRt" and target_dprt and _clean_region_key(p.dprt) != target_dprt:
+        if tingkat == "DPRt" and has_target_dprt and not _dprt_matches(p.dprt, dprt):
             continue
         matched.append(p)
     return matched
