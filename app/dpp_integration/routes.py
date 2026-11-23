@@ -7,11 +7,36 @@ from app.cache import invalidate_all_data_cache
 from app.models import AuditLog, Member
 from app.extensions import db
 from app.services.image_storage import intercept_and_store_member_photos
-from app.utils import payload_to_member_values, member_to_dict
+from app.utils import (
+    in_scope,
+    member_in_scope,
+    member_to_dict,
+    payload_to_member_values,
+)
 from app.dpp_integration.client import get_dpp_client
 
 bp = Blueprint("dpp", __name__)
 logger = logging.getLogger("nasdem.dpp")
+
+
+def _can_use_dpp_ekta(claims: dict) -> bool:
+    role = claims.get("role")
+    if role in ("ANGGOTA", "ADMIN_INVENTORY", "INVENTORY", "WAKIL_BENDAHARA"):
+        return False
+    return bool(claims.get("canAddMembers", True))
+
+
+def _scoped_fallback_territory(claims: dict) -> tuple[str, str, str]:
+    dpd = (claims.get("dpdAccess") or "").strip()
+    if not dpd or dpd == "ALL":
+        dpd = "Kota Manado"
+    dpc = (claims.get("dpcAccess") or "").strip()
+    if not dpc or dpc in ("ALL", "Umum (DPD)", "-"):
+        dpc = "Umum"
+    dprt = (claims.get("dprtAccess") or "").strip()
+    if not dprt or dprt in ("ALL", "Pusat/Umum", "-"):
+        dprt = "Umum"
+    return dpd, dpc, dprt
 
 
 @bp.get("/dpp/status")
@@ -74,7 +99,9 @@ def check_dpp_ktp():
     if client._is_admin_identity(nama_dpp):
         nama_dpp = None
 
+    claims = current_claims()
     local_member = db.session.get(Member, nik)
+    scoped_local = local_member if (local_member and member_in_scope(claims, local_member)) else None
 
     return jsonify(
         nik=nik,
@@ -85,8 +112,8 @@ def check_dpp_ktp():
         fotoKtpDpp=dpp_info.get("foto_ktp"),
         phoneDpp=dpp_info.get("phone"),
         wilayahTextDpp=dpp_info.get("wilayah_text"),
-        existsInLocal=bool(local_member),
-        localMember=member_to_dict(local_member) if local_member else None,
+        existsInLocal=bool(scoped_local),
+        localMember=member_to_dict(scoped_local) if scoped_local else None,
         message=(
             f"NIK sudah terdaftar di DPP Pusat dengan e-KTA Resmi: {nomor_ekta_dpp}"
             if nomor_ekta_dpp
@@ -104,6 +131,9 @@ def check_dpp_ktp():
 def sync_existing_kta():
     """Menarik dan menyinkronkan e-KTA resmi dari DPP Pusat ke data profil di database PostgreSQL."""
     claims = current_claims()
+    if not _can_use_dpp_ekta(claims):
+        return jsonify(error="Hanya pengurus resmi atau admin wilayah yang berwenang menyinkronkan e-KTA DPP."), 403
+
     data = request.get_json(silent=True) or {}
     raw_nik = str(data.get("nik") or "").strip()
     clean_nik = re.sub(r"\D", "", raw_nik)
@@ -112,6 +142,18 @@ def sync_existing_kta():
 
     if len(clean_nik) < 9:
         return jsonify(error="NIK wajib diisi dengan valid (9-16 digit)"), 400
+
+    # Validasi cakupan wilayah sebelum menyentuh portal DPP atau database
+    member = db.session.get(Member, clean_nik)
+    if member and not member_in_scope(claims, member):
+        return jsonify(error="Data kader ini berada di luar wilayah akses akun Anda."), 403
+
+    fallback_dpd, fallback_dpc, fallback_dprt = _scoped_fallback_territory(claims)
+    target_dpd = (data.get("dpd") or (member.dpd if member else "") or fallback_dpd).strip()
+    target_dpc = (data.get("dpc") or (member.dpc if member else "") or fallback_dpc).strip()
+    target_dprt = (data.get("dprt") or (member.dprt if member else "") or fallback_dprt).strip()
+    if not member and not in_scope(claims, target_dpd, target_dpc, target_dprt):
+        return jsonify(error="Wilayah sinkronisasi e-KTA berada di luar cakupan akses akun Anda."), 403
 
     client = get_dpp_client()
     target_ekta = provided_ekta
@@ -133,7 +175,6 @@ def sync_existing_kta():
             needsManualEkta=True,
         ), 404
 
-    member = db.session.get(Member, clean_nik)
     if member:
         member.nomor_ekta = target_ekta
         member.status_ktp_verified = True
@@ -167,7 +208,6 @@ def sync_existing_kta():
         ), 200
     else:
         # Jika belum ada di tabel member, buat data baru di PostgreSQL
-        from app.utils import payload_to_member_values
         nama = input_nama or f"Kader NasDem ({clean_nik})"
         raw_vals = payload_to_member_values(
             {
@@ -175,9 +215,9 @@ def sync_existing_kta():
                 "namaLengkap": nama,
                 "nomorEKTA": target_ekta,
                 "status": "Aktif",
-                "dpd": data.get("dpd") or "Kota Manado",
-                "dpc": data.get("dpc") or "Umum",
-                "dprt": data.get("dprt") or "Umum",
+                "dpd": target_dpd,
+                "dpc": target_dpc,
+                "dprt": target_dprt,
                 "isPengurus": False,
                 "tingkatKepengurusan": "Bukan Pengurus",
                 "jabatan": "Anggota Biasa",
@@ -233,10 +273,10 @@ def get_dpp_kta_card(nokta: str):
 @bp.post("/dpp/create-kta")
 @login_required
 def create_kta_endpoint():
-    """Menerbitkan nomor e-KTA resmi dari portal Digital NasDem DPP secara mandiri/terpisah."""
+    """Menerbitkan nomor e-KTA resmi dari portal Digital NasDem DPP dengan pembatasan wilayah ketat."""
     claims = current_claims()
-    if claims.get("role") == "ANGGOTA":
-        return jsonify(error="Hanya pengurus resmi atau admin yang berwenang menerbitkan e-KTA DPP."), 403
+    if not _can_use_dpp_ekta(claims):
+        return jsonify(error="Hanya pengurus resmi atau admin wilayah yang berwenang menerbitkan e-KTA DPP."), 403
 
     data = request.get_json(silent=True) or {}
     raw_nik = str(data.get("nik") or "").strip()
@@ -244,8 +284,12 @@ def create_kta_endpoint():
     if len(clean_nik) < 9 or len(clean_nik) > 16:
         return jsonify(error="NIK wajib 9-16 digit angka yang valid"), 400
 
-    # 1. Cek apakah kader sudah ada di database lokal
+    # 1. Cek apakah kader sudah ada di database lokal & pastikan dalam wilayah akses akun
     member = db.session.get(Member, clean_nik)
+    if member and not member_in_scope(claims, member):
+        return jsonify(error="Data kader ini berada di luar wilayah akses akun Anda."), 403
+
+    fallback_dpd, fallback_dpc, fallback_dprt = _scoped_fallback_territory(claims)
 
     # Gabungkan data input form dengan data member lokal (data form menjadi prioritas jika diisi)
     merged_dict = {
@@ -255,9 +299,9 @@ def create_kta_endpoint():
         "tanggalLahir": data.get("tanggalLahir") or (member.tanggal_lahir if member else None),
         "jenisKelamin": data.get("jenisKelamin") or (member.jenis_kelamin if member else "Laki-laki"),
         "alamatLengkap": data.get("alamatLengkap") or (member.alamat_lengkap if member else ""),
-        "dpd": data.get("dpd") or (member.dpd if member else "Kota Manado"),
-        "dpc": data.get("dpc") or (member.dpc if member else "Umum"),
-        "dprt": data.get("dprt") or (member.dprt if member else "Umum"),
+        "dpd": data.get("dpd") or (member.dpd if member else fallback_dpd),
+        "dpc": data.get("dpc") or (member.dpc if member else fallback_dpc),
+        "dprt": data.get("dprt") or (member.dprt if member else fallback_dprt),
         "agama": data.get("agama") or (member.agama if member else "Kristen Protestan"),
         "pekerjaan": data.get("pekerjaan") or (member.pekerjaan if member else "Wiraswasta"),
         "nomorHP": data.get("nomorHP") or (member.nomor_hp if member else ""),
@@ -276,6 +320,9 @@ def create_kta_endpoint():
         "fotoKtpUrl": data.get("fotoKtpUrl") or (member.foto_ktp_url if member else None),
         "fotoProfilUrl": data.get("fotoProfilUrl") or (member.foto_profil_url if member else None),
     }
+
+    if not in_scope(claims, merged_dict["dpd"], merged_dict["dpc"], merged_dict["dprt"]):
+        return jsonify(error="Wilayah pendaftaran e-KTA berada di luar cakupan akses akun Anda."), 403
 
     client = get_dpp_client()
 
