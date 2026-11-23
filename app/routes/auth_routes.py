@@ -1,3 +1,4 @@
+import re
 import uuid
 
 from flask import Blueprint, jsonify, request
@@ -163,12 +164,45 @@ def claims_for(u: AppUser) -> dict:
         "dprtAccess": dprt_acc,
         "adminName": u.full_name,
         "adminNik": u.member_nik or u.username,
+        "username": u.username,
         "jabatan": u.jabatan or default_jabatan,
         "canAddMembers": is_structural_actor,
         "hasSk": is_structural_actor,
         "isDelegatedAdmin": normalized_role in DELEGATED_ADMIN_ROLES,
         "delegatedForKetuaNik": u.delegated_for_ketua_nik,
     }
+
+
+_USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,28}[A-Za-z0-9]$")
+
+
+def _validate_custom_username(raw_username: str) -> tuple[str | None, str | None]:
+    clean = (raw_username or "").strip()
+    if len(clean) < 4 or len(clean) > 30:
+        return None, "Username harus terdiri dari 4 hingga 30 karakter."
+    if not _USERNAME_RE.match(clean):
+        return (
+            None,
+            "Username hanya boleh berisi huruf, angka, titik (.), garis bawah (_), atau tanda hubung (-) tanpa spasi.",
+        )
+    return clean, None
+
+
+def _resolve_authenticated_app_user(claims: dict) -> AppUser | None:
+    uid = get_jwt_identity()
+    user = None
+    if uid:
+        try:
+            user = db.session.get(AppUser, uuid.UUID(str(uid)))
+        except (ValueError, TypeError):
+            user = None
+    if user is None:
+        ident = (claims.get("adminNik") or claims.get("username") or "").strip()
+        if ident:
+            user = AppUser.query.filter(
+                (AppUser.member_nik == ident) | (func.lower(AppUser.username) == ident.lower())
+            ).first()
+    return user
 
 
 def resolve_territory_access(member: Member, user_role: str):
@@ -339,16 +373,23 @@ def check_pengurus():
 
 @bp.post("/auth/activate-pengurus")
 def activate_pengurus():
-    """Aktivasi akun pengurus atau buat kata sandi baru mandiri (Opsi 1)."""
+    """Aktivasi akun pengurus atau buat kata sandi baru mandiri (opsional username kustom)."""
     data = request.get_json(silent=True) or {}
     ident = (data.get("nik") or "").strip()
     clean_ident = ident.replace(" ", "").replace("-", "").strip()
     new_password = (data.get("newPassword") or "").strip()
+    raw_username = (data.get("username") or "").strip()
 
     if not clean_ident:
         return jsonify(error="Nomor NIK KTP wajib diisi"), 400
     if not new_password or len(new_password) < 6:
         return jsonify(error="Kata sandi baru minimal 6 karakter"), 400
+
+    chosen_username = None
+    if raw_username:
+        chosen_username, username_err = _validate_custom_username(raw_username)
+        if username_err:
+            return jsonify(error=username_err), 400
 
     member, should_heal_nik = find_member_by_nik_or_incomplete_match(clean_ident)
 
@@ -361,8 +402,18 @@ def activate_pengurus():
     ).first()
     if existing_user and existing_user.password_hash:
         return jsonify(
-            error="Akun ini sudah aktif dan memiliki kata sandi. Silakan masuk melalui tab Login, ubah kata sandi dari menu Profil setelah login, atau hubungi Super Admin DPW jika lupa kata sandi."
+            error="Akun ini sudah aktif dan memiliki kata sandi. Silakan masuk melalui tab Login, ubah kata sandi dari menu Profil Saya setelah login, atau hubungi Super Admin DPW jika lupa kata sandi."
         ), 409
+
+    if chosen_username:
+        username_conflict_query = AppUser.query.filter(
+            (func.lower(AppUser.username) == chosen_username.lower())
+            | (func.lower(AppUser.member_nik) == chosen_username.lower())
+        )
+        if existing_user:
+            username_conflict_query = username_conflict_query.filter(AppUser.id != existing_user.id)
+        if username_conflict_query.first():
+            return jsonify(error="Username sudah digunakan oleh akun lain. Silakan pilih username lain."), 409
 
     if should_heal_nik:
         member = rename_member_nik_safely(db.session, member, clean_ident)
@@ -378,6 +429,8 @@ def activate_pengurus():
 
     if user:
         user.member_nik = member.nik
+        if chosen_username:
+            user.username = chosen_username
         user.password_hash = generate_password_hash(new_password)
         # Jangan menimpa nama admin custom bila sudah diatur khusus oleh Super Admin
         if not user.full_name:
@@ -394,7 +447,7 @@ def activate_pengurus():
         user = AppUser(
             member_nik=member.nik,
             nomor_ekta=member.nomor_ekta,
-            username=member.nik,
+            username=chosen_username or member.nik,
             password_hash=generate_password_hash(new_password),
             full_name=member.nama_lengkap,
             role=user_role,
@@ -421,6 +474,45 @@ def activate_pengurus():
     )
 
 
+@bp.post("/auth/change-username")
+@login_required
+def change_username():
+    """Mengatur atau memperbarui username login akun sendiri agar tidak perlu mengetik NIK."""
+    data = request.get_json(silent=True) or {}
+    raw_username = (data.get("username") or "").strip()
+    clean_username, username_err = _validate_custom_username(raw_username)
+    if username_err:
+        return jsonify(error=username_err), 400
+
+    claims = current_claims()
+    user = _resolve_authenticated_app_user(claims)
+    if user is None:
+        return jsonify(error="Akun pengguna tidak ditemukan."), 404
+
+    conflict = AppUser.query.filter(
+        AppUser.id != user.id,
+        (func.lower(AppUser.username) == clean_username.lower())
+        | (func.lower(AppUser.member_nik) == clean_username.lower()),
+    ).first()
+    if conflict:
+        return jsonify(error="Username sudah digunakan oleh akun lain. Silakan pilih username lain."), 409
+
+    user.username = clean_username
+    db.session.commit()
+
+    updated_claims = claims_for(user)
+    token = create_access_token(
+        identity=str(user.id),
+        additional_claims=updated_claims,
+        expires_delta=get_config().JWT_ACCESS_TOKEN_EXPIRES,
+    )
+    return jsonify(
+        token=token,
+        session=updated_claims,
+        message=f"Username login berhasil disimpan sebagai '{clean_username}'.",
+    )
+
+
 @bp.post("/auth/change-password")
 @login_required
 def change_password():
@@ -440,20 +532,7 @@ def change_password():
         return jsonify(error="Kata sandi baru tidak boleh sama dengan kata sandi lama."), 400
 
     claims = current_claims()
-    uid = get_jwt_identity()
-    user = None
-    if uid:
-        try:
-            user = db.session.get(AppUser, uuid.UUID(str(uid)))
-        except (ValueError, TypeError):
-            user = None
-
-    if user is None:
-        ident = (claims.get("adminNik") or "").strip()
-        if ident:
-            user = AppUser.query.filter(
-                (AppUser.member_nik == ident) | (func.lower(AppUser.username) == ident.lower())
-            ).first()
+    user = _resolve_authenticated_app_user(claims)
 
     if user is None:
         return jsonify(error="Akun pengguna tidak ditemukan."), 404
@@ -491,6 +570,7 @@ def me():
         "dprtAccess",
         "adminName",
         "adminNik",
+        "username",
         "jabatan",
         "canAddMembers",
         "hasSk",

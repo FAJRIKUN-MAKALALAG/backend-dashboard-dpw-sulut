@@ -133,7 +133,8 @@ def delete_user(uid):
     u = db.session.get(AppUser, uid)
     if not u:
         return jsonify(error="Akun tidak ditemukan"), 404
-    if u.username == current_app.config.get("MASTER_USERNAME", "7106033003050001"):
+    master_username = current_app.config.get("MASTER_USERNAME", "7106033003050001")
+    if u.username == master_username or u.member_nik == master_username:
         return jsonify(error="Akun Super Administrator Utama tidak boleh dihapus"), 403
     db.session.delete(u)
     db.session.commit()
