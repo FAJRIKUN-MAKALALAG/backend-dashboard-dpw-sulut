@@ -1,7 +1,7 @@
 from flask import Blueprint, current_app, jsonify, request
 from werkzeug.security import generate_password_hash
 
-from app.auth import invalidate_user_auth_state, super_admin_required
+from app.auth import clear_user_presence, invalidate_user_auth_state, super_admin_required
 from app.extensions import db
 from app.models import AppUser
 from app.utils import DELEGATED_ADMIN_ROLES, DPC_ROLES, DPRT_ROLES, DPW_ROLES, row_to_dict
@@ -140,6 +140,8 @@ def update_user(uid):
 
     db.session.commit()
     invalidate_user_auth_state(str(u.id))
+    if not u.is_active:
+        clear_user_presence(str(u.id))
     return jsonify(row_to_dict(u, USER_FIELDS))
 
 

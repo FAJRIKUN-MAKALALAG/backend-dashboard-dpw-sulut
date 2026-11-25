@@ -7,7 +7,13 @@ from sqlalchemy import func
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from config import get_config
-from app.auth import current_claims, invalidate_user_auth_state, login_required
+from app.auth import (
+    clear_user_presence,
+    current_claims,
+    invalidate_user_auth_state,
+    login_required,
+    touch_user_presence,
+)
 from app.cache import invalidate_all_data_cache
 from app.rate_limit import rate_limit
 from app.extensions import db
@@ -287,6 +293,7 @@ def login():
             ), 401
 
         claims = claims_for(user)
+        touch_user_presence(str(user.id), force=True)
         token = create_access_token(
             identity=str(user.id),
             additional_claims=claims,
@@ -323,6 +330,7 @@ def login():
         db.session.commit()
         refreshed_user = db.session.get(AppUser, target_user_id)
         claims = claims_for(refreshed_user)
+        touch_user_presence(str(refreshed_user.id), force=True)
         token = create_access_token(
             identity=str(refreshed_user.id),
             additional_claims=claims,
@@ -518,6 +526,7 @@ def activate_pengurus():
     db.session.commit()
 
     claims = claims_for(user)
+    touch_user_presence(str(user.id), force=True)
     token = create_access_token(
         identity=str(user.id),
         additional_claims=claims,
@@ -639,6 +648,14 @@ def refresh_session():
         expires_delta=get_config().JWT_ACCESS_TOKEN_EXPIRES,
     )
     return jsonify(token=token, session=claims)
+
+
+@bp.post("/auth/logout")
+@login_required
+def logout_session():
+    """Menandai sesi user langsung offline (`last_seen_at = NULL`) saat keluar."""
+    clear_user_presence(str(get_jwt_identity() or ""))
+    return jsonify(ok=True)
 
 
 @bp.get("/auth/me")

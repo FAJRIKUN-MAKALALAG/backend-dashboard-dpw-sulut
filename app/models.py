@@ -197,6 +197,7 @@ class AppUser(db.Model):
     delegated_for_ketua_nik = db.Column(db.String(50), index=True)
     is_active = db.Column(db.Boolean, default=True)
     token_version = db.Column(db.Integer, nullable=False, default=1, server_default="1")
+    last_seen_at = db.Column(db.DateTime(timezone=True), nullable=True, index=True)
     created_at = db.Column(db.DateTime(timezone=True), server_default=func.now())
     updated_at = db.Column(db.DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

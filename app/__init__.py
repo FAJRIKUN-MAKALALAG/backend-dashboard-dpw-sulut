@@ -102,6 +102,17 @@ def create_app() -> Flask:
             db.session.rollback()
             logger.warning(f"Migrasi kolom token_version dilewati: {exc}")
         try:
+            db.session.execute(
+                db.text("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ")
+            )
+            db.session.execute(
+                db.text("CREATE INDEX IF NOT EXISTS ix_app_users_last_seen_at ON app_users (last_seen_at)")
+            )
+            db.session.commit()
+        except Exception as exc:
+            db.session.rollback()
+            logger.warning(f"Migrasi kolom last_seen_at dilewati: {exc}")
+        try:
             from app.routes.structure_slots import ensure_structure_slots_table_exists
             ensure_structure_slots_table_exists()
         except Exception as exc:

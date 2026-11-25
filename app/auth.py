@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from functools import wraps
 import threading
 import time
@@ -11,6 +12,71 @@ from app.extensions import db
 _AUTH_STATE_TTL = 5.0
 _auth_state_lock = threading.Lock()
 _auth_state_cache: dict[str, tuple[float, bool, bool, int]] = {}
+
+_PRESENCE_UPDATE_INTERVAL = 60.0
+_presence_lock = threading.Lock()
+_presence_last_write: dict[str, float] = {}
+
+
+def touch_user_presence(user_id_str: str, force: bool = False) -> None:
+    """Memperbarui timestamp `last_seen_at` pengguna secara ter-throttle (maks. 1x/60 dtk)."""
+    clean_id = str(user_id_str or "").strip()
+    if not clean_id:
+        return
+    try:
+        parsed_uuid = uuid.UUID(clean_id)
+    except ValueError:
+        return
+
+    now_mono = time.monotonic()
+    with _presence_lock:
+        last_ts = _presence_last_write.get(clean_id)
+        if not force and last_ts is not None and (now_mono - last_ts) < _PRESENCE_UPDATE_INTERVAL:
+            return
+        if len(_presence_last_write) > 2048:
+            _presence_last_write.clear()
+        _presence_last_write[clean_id] = now_mono
+
+    from app.models import AppUser
+
+    try:
+        db.session.query(AppUser).filter(AppUser.id == parsed_uuid).update(
+            {"last_seen_at": datetime.now(timezone.utc)},
+            synchronize_session=False,
+        )
+        db.session.commit()
+    except Exception:
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+
+
+def clear_user_presence(user_id_str: str) -> None:
+    """Mengosongkan `last_seen_at` saat user logout eksplisit atau dinonaktifkan."""
+    clean_id = str(user_id_str or "").strip()
+    if not clean_id:
+        return
+    with _presence_lock:
+        _presence_last_write.pop(clean_id, None)
+    try:
+        parsed_uuid = uuid.UUID(clean_id)
+    except ValueError:
+        return
+
+    from app.models import AppUser
+
+    try:
+        db.session.query(AppUser).filter(AppUser.id == parsed_uuid).update(
+            {"last_seen_at": None},
+            synchronize_session=False,
+        )
+        db.session.commit()
+    except Exception:
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
 
 
 def invalidate_user_auth_state(user_id: str | None = None) -> None:
@@ -77,12 +143,16 @@ def is_token_revoked(jwt_header: dict, jwt_payload: dict) -> bool:
 
     claim_ver = jwt_payload.get("tokenVersion")
     if claim_ver is None:
-        return db_version > 1
+        revoked = db_version > 1
+    else:
+        try:
+            revoked = int(claim_ver) != int(db_version)
+        except (TypeError, ValueError):
+            revoked = True
 
-    try:
-        return int(claim_ver) != int(db_version)
-    except (TypeError, ValueError):
-        return True
+    if not revoked:
+        touch_user_presence(uid)
+    return revoked
 
 
 def current_claims() -> dict:
