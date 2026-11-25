@@ -132,8 +132,8 @@ class DppClient:
 
     def __init__(self):
         self.base_url = (os.getenv("DPP_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
-        self.email = os.getenv("DPP_ADMIN_EMAIL", "gabrielasenduk01@gmail.com")
-        self.password = os.getenv("DPP_ADMIN_PASSWORD", "NasDem2029")
+        self.email = (os.getenv("DPP_ADMIN_EMAIL") or "").strip()
+        self.password = (os.getenv("DPP_ADMIN_PASSWORD") or "").strip()
         if requests:
             self.session = requests.Session()
         else:
@@ -201,17 +201,15 @@ class DppClient:
         return self.login()
 
     def _is_admin_identity(self, text: Optional[str]) -> bool:
-        """Mengecek apakah teks/nama/email mengindikasikan akun Admin DPP (Gabriela Senduk)."""
+        """Mengecek apakah teks/nama/email mengindikasikan akun operator Admin DPP."""
         if not text:
             return False
         lower = str(text).lower()
-        admin_tokens = [
-            "gabriela senduk",
-            "gabrielasenduk",
-            "gabrielasenduk01@gmail.com",
-            (self.email or "").lower(),
-        ]
-        return any(tok in lower for tok in admin_tokens if tok)
+        admin_email = (self.email or "").strip().lower()
+        admin_local = admin_email.split("@", 1)[0] if "@" in admin_email else ""
+        admin_name = (os.getenv("DPP_ADMIN_NAME") or "").strip().lower()
+        admin_tokens = [tok for tok in (admin_email, admin_local, admin_name) if len(tok) >= 4]
+        return any(tok in lower for tok in admin_tokens)
 
     def _extract_kta_for_nik(self, html_text: str, nik: str = "", current_url: str = "") -> Optional[str]:
         """Mengekstrak nomor e-KTA 14-18 digit resmi KHUSUS untuk NIK target dari HTML atau URL halaman DPP."""

@@ -1,7 +1,7 @@
 from flask import Blueprint, current_app, jsonify, request
 from werkzeug.security import generate_password_hash
 
-from app.auth import super_admin_required
+from app.auth import invalidate_user_auth_state, super_admin_required
 from app.extensions import db
 from app.models import AppUser
 from app.utils import DELEGATED_ADMIN_ROLES, DPC_ROLES, DPRT_ROLES, DPW_ROLES, row_to_dict
@@ -109,6 +109,15 @@ def update_user(uid):
     if not u:
         return jsonify(error="Akun tidak ditemukan"), 404
     data = request.get_json(silent=True) or {}
+
+    master_username = current_app.config.get("MASTER_USERNAME", "7106033003050001")
+    is_master = u.username == master_username or u.member_nik == master_username
+    if is_master:
+        if data.get("isActive") is False:
+            return jsonify(error="Akun Super Administrator Utama tidak dapat dinonaktifkan"), 403
+        if "role" in data and str(data.get("role") or "").strip().upper() != "SUPER_ADMIN":
+            return jsonify(error="Hak akses Super Administrator Utama tidak dapat diturunkan"), 403
+
     role = data.get("role", u.role)
     if role == "INVENTORY":
         role = "ADMIN_INVENTORY"
@@ -122,8 +131,15 @@ def update_user(uid):
             return jsonify(error=f"Akun {role} wajib memilih wilayah Kecamatan (DPC)."), 400
         if "dprtAccess" in data and (not data.get("dprtAccess") or data.get("dprtAccess") == "ALL"):
             return jsonify(error=f"Akun {role} wajib memilih wilayah Desa/Kelurahan (DPRt) spesifik."), 400
+
+    old_snapshot = (u.role, u.dpd_access, u.dpc_access, u.dprt_access, bool(u.is_active))
     _apply(u, data)
+    new_snapshot = (u.role, u.dpd_access, u.dpc_access, u.dprt_access, bool(u.is_active))
+    if bool(data.get("password")) or old_snapshot != new_snapshot or not u.is_active:
+        u.token_version = int(getattr(u, "token_version", 1) or 1) + 1
+
     db.session.commit()
+    invalidate_user_auth_state(str(u.id))
     return jsonify(row_to_dict(u, USER_FIELDS))
 
 
@@ -136,6 +152,8 @@ def delete_user(uid):
     master_username = current_app.config.get("MASTER_USERNAME", "7106033003050001")
     if u.username == master_username or u.member_nik == master_username:
         return jsonify(error="Akun Super Administrator Utama tidak boleh dihapus"), 403
+    user_id_str = str(u.id)
     db.session.delete(u)
     db.session.commit()
+    invalidate_user_auth_state(user_id_str)
     return jsonify(deleted=uid)

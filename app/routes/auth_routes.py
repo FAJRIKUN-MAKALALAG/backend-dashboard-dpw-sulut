@@ -7,8 +7,9 @@ from sqlalchemy import func
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from config import get_config
-from app.auth import current_claims, login_required
+from app.auth import current_claims, invalidate_user_auth_state, login_required
 from app.cache import invalidate_all_data_cache
+from app.rate_limit import rate_limit
 from app.extensions import db
 from app.models import AppUser, Member, Position
 from app.services.referral_service import is_ketua_position
@@ -170,6 +171,7 @@ def claims_for(u: AppUser) -> dict:
         "hasSk": is_structural_actor,
         "isDelegatedAdmin": normalized_role in DELEGATED_ADMIN_ROLES,
         "delegatedForKetuaNik": u.delegated_for_ketua_nik,
+        "tokenVersion": int(getattr(u, "token_version", 1) or 1),
     }
 
 
@@ -247,6 +249,7 @@ def resolve_territory_access(member: Member, user_role: str):
 
 
 @bp.post("/auth/login")
+@rate_limit(10, 60, scope="ip", key_prefix="auth_login")
 def login():
     """
     Login sistem Partai NasDem Sulut (ketat berbasis NIK / Nomor e-KTA / Username):
@@ -333,9 +336,53 @@ def login():
     ), 401
 
 
+def _mask_person_name(name: str) -> str:
+    """Menyamarkan nama lengkap pada endpoint publik (mis. 'Budi Santoso' -> 'Bu*** Sa***')."""
+    words = [w for w in str(name or "").strip().split() if w]
+    if not words:
+        return "Pengurus Terdaftar"
+    masked = []
+    for w in words:
+        keep = 2 if len(w) >= 4 else 1
+        masked.append(f"{w[:keep]}***")
+    return " ".join(masked)
+
+
+def _normalize_person_name(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(name or "").lower()).strip()
+
+
+def _resolve_activation_challenge(member: Member) -> tuple[str, str, str]:
+    """Menentukan tantangan verifikasi identitas saat aktivasi akun pengurus."""
+    digits = re.sub(r"\D", "", str(getattr(member, "nomor_hp", "") or ""))
+    if len(digits) >= 8 and len(set(digits)) > 1:
+        hint = f"{digits[:4]}-****-XXXX" if len(digits) >= 8 else "****-XXXX"
+        return (
+            "PHONE_LAST4",
+            digits[-4:],
+            f"Masukkan 4 digit terakhir Nomor HP terdaftar ({hint})",
+        )
+    return (
+        "FULL_NAME",
+        _normalize_person_name(member.nama_lengkap),
+        "Masukkan Nama Lengkap Anda sesuai data SK kepengurusan",
+    )
+
+
+def _verify_activation_answer(member: Member, provided: str) -> bool:
+    method, expected, _ = _resolve_activation_challenge(member)
+    if not expected:
+        return False
+    if method == "PHONE_LAST4":
+        digits = re.sub(r"\D", "", str(provided or ""))
+        return len(digits) == 4 and digits == expected
+    return _normalize_person_name(provided) == expected
+
+
 @bp.post("/auth/check-pengurus")
+@rate_limit(5, 60, scope="ip", key_prefix="auth_check")
 def check_pengurus():
-    """Memeriksa apakah NIK/e-KTA terdaftar sebagai pengurus resmi Partai NasDem Sulut."""
+    """Memeriksa apakah NIK/e-KTA terdaftar sebagai pengurus resmi (data disamarkan dari scraping)."""
     data = request.get_json(silent=True) or {}
     ident = (data.get("nik") or "").strip()
     clean_ident = ident.replace(" ", "").replace("-", "").strip()
@@ -355,33 +402,37 @@ def check_pengurus():
     ).first()
 
     effective_nik = clean_ident if should_heal_nik else member.nik
+    v_method, _, v_prompt = _resolve_activation_challenge(member)
     return jsonify({
         "found": True,
         "nik": effective_nik,
         "nikAutoCorrectedFrom": member.nik if should_heal_nik else None,
-        "nomorEkta": member.nomor_ekta or "-",
-        "namaLengkap": member.nama_lengkap,
+        "namaLengkap": _mask_person_name(member.nama_lengkap),
         "jabatan": member.jabatan or "Pengurus",
         "tingkatKepengurusan": member.tingkat_kepengurusan or "DPC",
         "dpd": member.dpd,
-        "dpc": member.dpc,
-        "dprt": member.dprt,
+        "verificationMethod": v_method,
+        "verificationPrompt": v_prompt,
         "hasCustomPassword": user is not None and bool(user.password_hash),
         "defaultPasswordHint": "",
     })
 
 
 @bp.post("/auth/activate-pengurus")
+@rate_limit(5, 60, scope="ip", key_prefix="auth_activate")
 def activate_pengurus():
-    """Aktivasi akun pengurus atau buat kata sandi baru mandiri (opsional username kustom)."""
+    """Aktivasi akun pengurus atau buat kata sandi baru mandiri (wajib verifikasi identitas + opsional username)."""
     data = request.get_json(silent=True) or {}
     ident = (data.get("nik") or "").strip()
     clean_ident = ident.replace(" ", "").replace("-", "").strip()
     new_password = (data.get("newPassword") or "").strip()
     raw_username = (data.get("username") or "").strip()
+    verification_value = (data.get("verificationValue") or "").strip()
 
     if not clean_ident:
         return jsonify(error="Nomor NIK KTP wajib diisi"), 400
+    if not verification_value:
+        return jsonify(error="Verifikasi identitas (4 digit akhir HP atau Nama Lengkap) wajib diisi"), 400
     if not new_password or len(new_password) < 6:
         return jsonify(error="Kata sandi baru minimal 6 karakter"), 400
 
@@ -404,6 +455,11 @@ def activate_pengurus():
         return jsonify(
             error="Akun ini sudah aktif dan memiliki kata sandi. Silakan masuk melalui tab Login, ubah kata sandi dari menu Profil Saya setelah login, atau hubungi Super Admin DPW jika lupa kata sandi."
         ), 409
+
+    if not _verify_activation_answer(member, verification_value):
+        return jsonify(
+            error="Verifikasi identitas tidak cocok. Periksa kembali data Anda atau hubungi Super Admin DPW."
+        ), 403
 
     if chosen_username:
         username_conflict_query = AppUser.query.filter(
@@ -515,6 +571,7 @@ def change_username():
 
 @bp.post("/auth/change-password")
 @login_required
+@rate_limit(6, 60, scope="user_or_ip", key_prefix="auth_chgpass")
 def change_password():
     """Mengubah kata sandi akun sendiri dengan konfirmasi kata sandi lama."""
     data = request.get_json(silent=True) or {}
@@ -541,8 +598,21 @@ def change_password():
         return jsonify(error="Kata sandi lama yang Anda masukkan salah."), 400
 
     user.password_hash = generate_password_hash(new_password)
+    user.token_version = int(getattr(user, "token_version", 1) or 1) + 1
     db.session.commit()
-    return jsonify(message="Kata sandi berhasil diperbarui.")
+    invalidate_user_auth_state(str(user.id))
+
+    updated_claims = claims_for(user)
+    new_token = create_access_token(
+        identity=str(user.id),
+        additional_claims=updated_claims,
+        expires_delta=get_config().JWT_ACCESS_TOKEN_EXPIRES,
+    )
+    return jsonify(
+        token=new_token,
+        session=updated_claims,
+        message="Kata sandi berhasil diperbarui. Sesi lama di perangkat lain telah dicabut otomatis.",
+    )
 
 
 @bp.post("/auth/refresh")
@@ -550,6 +620,18 @@ def change_password():
 def refresh_session():
     """Memperpanjang masa aktif token sesi pengurus / admin."""
     claims = current_claims()
+    user = _resolve_authenticated_app_user(claims)
+    if user is not None:
+        if not user.is_active:
+            return jsonify(error="Akun dinonaktifkan oleh Super Administrator."), 403
+        refreshed_claims = claims_for(user)
+        token = create_access_token(
+            identity=str(user.id),
+            additional_claims=refreshed_claims,
+            expires_delta=get_config().JWT_ACCESS_TOKEN_EXPIRES,
+        )
+        return jsonify(token=token, session=refreshed_claims)
+
     ident = claims.get("sub") or claims.get("adminNik") or "user"
     token = create_access_token(
         identity=str(ident),

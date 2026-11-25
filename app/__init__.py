@@ -8,6 +8,23 @@ from app.extensions import db, jwt, migrate
 from app.logging_config import setup_logger
 
 
+def _resolve_allowed_origin(origin: str | None, allowed_origins) -> str | None:
+    """Memvalidasi header Origin terhadap whitelist CORS (menolak refleksi origin liar atau '*')."""
+    if not origin:
+        return None
+    cleaned = origin.strip().rstrip("/")
+    if not cleaned:
+        return None
+    if not isinstance(allowed_origins, (list, tuple, set)):
+        return None
+    normalized_map = {
+        str(o).strip().rstrip("/").lower(): str(o).strip().rstrip("/")
+        for o in allowed_origins
+        if str(o).strip() and str(o).strip() != "*"
+    }
+    return cleaned if cleaned.lower() in normalized_map else None
+
+
 def create_app() -> Flask:
     app = Flask(__name__)
     app.config.from_object(get_config())
@@ -19,12 +36,14 @@ def create_app() -> Flask:
     db.init_app(app)
     migrate.init_app(app, db)
     jwt.init_app(app)
-    cors_origins = app.config.get("CORS_ORIGINS", "*")
+    cors_origins = app.config.get("CORS_ORIGINS", [])
+    if not isinstance(cors_origins, (list, tuple)):
+        cors_origins = []
     CORS(
         app,
         resources={
             r"/*": {
-                "origins": cors_origins,
+                "origins": list(cors_origins),
                 "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
                 "allow_headers": ["Content-Type", "Authorization", "Accept", "X-Requested-With", "Origin"],
                 "supports_credentials": True,
@@ -34,11 +53,18 @@ def create_app() -> Flask:
 
     @app.before_request
     def handle_cors_preflight():
-        """Menangani preflight OPTIONS lebih awal agar tidak pernah diblokir oleh auth/redirect/middleware."""
+        """Menangani preflight OPTIONS lebih awal dengan validasi ketat whitelist CORS."""
         if request.method == "OPTIONS":
+            origin = request.headers.get("Origin")
+            allowed_origin = _resolve_allowed_origin(origin, app.config.get("CORS_ORIGINS"))
+            if origin and not allowed_origin:
+                return jsonify(error="Origin tidak diizinkan oleh kebijakan CORS"), 403
+
             resp = app.make_default_options_response()
-            origin = request.headers.get("Origin") or "*"
-            resp.headers["Access-Control-Allow-Origin"] = origin
+            if allowed_origin:
+                resp.headers["Access-Control-Allow-Origin"] = allowed_origin
+                resp.headers["Access-Control-Allow-Credentials"] = "true"
+                resp.headers["Vary"] = "Origin"
             resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
             req_headers = request.headers.get("Access-Control-Request-Headers")
             resp.headers["Access-Control-Allow-Headers"] = (
@@ -46,7 +72,6 @@ def create_app() -> Flask:
                 if req_headers
                 else "Content-Type, Authorization, Accept, X-Requested-With, Origin"
             )
-            resp.headers["Access-Control-Allow-Credentials"] = "true"
             resp.headers["Access-Control-Max-Age"] = "86400"
             return resp, 200
 
@@ -68,6 +93,14 @@ def create_app() -> Flask:
         except Exception as exc:
             db.session.rollback()
             logger.warning(f"Migrasi kolom delegated_for_ketua_nik dilewati: {exc}")
+        try:
+            db.session.execute(
+                db.text("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 1")
+            )
+            db.session.commit()
+        except Exception as exc:
+            db.session.rollback()
+            logger.warning(f"Migrasi kolom token_version dilewati: {exc}")
         try:
             from app.routes.structure_slots import ensure_structure_slots_table_exists
             ensure_structure_slots_table_exists()
@@ -96,27 +129,43 @@ def create_app() -> Flask:
 
     @app.after_request
     def ensure_cors_and_compress(response):
-        """Memastikan header CORS selalu terpasang (termasuk saat 4xx/5xx) & mengompresi JSON >= 1 KB."""
+        """Memvalidasi CORS ketat pada response, memasang HTTP Security Headers & mengompresi JSON >= 1 KB."""
         origin = request.headers.get("Origin")
         if origin:
-            response.headers["Access-Control-Allow-Origin"] = origin
-            response.headers["Access-Control-Allow-Credentials"] = "true"
-            vary_hdr = response.headers.get("Vary", "")
-            if "Origin" not in vary_hdr:
-                response.headers["Vary"] = f"{vary_hdr}, Origin".lstrip(", ")
-        else:
-            response.headers.setdefault("Access-Control-Allow-Origin", "*")
+            allowed_origin = _resolve_allowed_origin(origin, app.config.get("CORS_ORIGINS"))
+            if allowed_origin:
+                response.headers["Access-Control-Allow-Origin"] = allowed_origin
+                response.headers["Access-Control-Allow-Credentials"] = "true"
+                vary_hdr = response.headers.get("Vary", "")
+                if "Origin" not in vary_hdr:
+                    response.headers["Vary"] = f"{vary_hdr}, Origin".lstrip(", ")
+                response.headers.setdefault(
+                    "Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+                )
+                req_headers = request.headers.get("Access-Control-Request-Headers")
+                response.headers.setdefault(
+                    "Access-Control-Allow-Headers",
+                    req_headers
+                    if req_headers
+                    else "Content-Type, Authorization, Accept, X-Requested-With, Origin",
+                )
+            else:
+                response.headers.pop("Access-Control-Allow-Origin", None)
+                response.headers.pop("Access-Control-Allow-Credentials", None)
 
-        response.headers.setdefault(
-            "Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+        # HTTP Security Headers standar produksi
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        response.headers.setdefault("Permissions-Policy", "camera=(self), microphone=(), geolocation=()")
+        is_https = (
+            request.is_secure
+            or request.headers.get("X-Forwarded-Proto", "").lower() == "https"
         )
-        req_headers = request.headers.get("Access-Control-Request-Headers")
-        response.headers.setdefault(
-            "Access-Control-Allow-Headers",
-            req_headers
-            if req_headers
-            else "Content-Type, Authorization, Accept, X-Requested-With, Origin",
-        )
+        if not app.debug or is_https:
+            response.headers.setdefault(
+                "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+            )
 
         if (
             response.direct_passthrough
@@ -155,12 +204,17 @@ def create_app() -> Flask:
             db.session.execute(db.text("SELECT 1"))
             return jsonify(status="ok", database="up")
         except Exception as exc:  # pragma: no cover
-            return jsonify(status="error", database=str(exc)), 503
+            logger.warning(f"[HEALTH-CHECK-ERROR] {exc}")
+            if app.debug:
+                return jsonify(status="error", database=str(exc)), 503
+            return jsonify(status="error", database="down"), 503
+
+    from app.auth import current_claims, login_required
 
     @app.get("/api/logs/recent")
+    @login_required
     def get_recent_logs():
         """Endpoint diagnostik khusus Administrator untuk melihat baris log terbaru."""
-        from app.auth import current_claims
         claims = current_claims()
         if not claims or claims.get("role") not in ("SUPER_ADMIN", "KETUA_DPW", "ADMIN_DPW"):
             return jsonify(error="Akses ditolak: Hanya Administrator yang dapat melihat log"), 403
@@ -207,12 +261,14 @@ def create_app() -> Flask:
             app.api_logger.error(
                 f"[UNHANDLED EXCEPTION] {request.method} {request.path}\n  -> Error: {e}\n{tb}"
             )
-        return jsonify(
-            error="Terjadi kesalahan server internal",
-            detail=str(e),
-            path=request.path,
-            request_id=getattr(g, "request_id", None),
-        ), 500
+        payload = {
+            "error": "Terjadi kesalahan server internal",
+            "path": request.path,
+            "request_id": getattr(g, "request_id", None),
+        }
+        if app.debug:
+            payload["detail"] = str(e)
+        return jsonify(payload), 500
 
     @jwt.unauthorized_loader
     def _unauth(msg):
@@ -221,6 +277,18 @@ def create_app() -> Flask:
     @jwt.expired_token_loader
     def _expired(_h, _p):
         return jsonify(error="Sesi berakhir, silakan login kembali"), 401
+
+    from app.auth import is_token_revoked
+
+    @jwt.token_in_blocklist_loader
+    def _check_if_token_revoked(jwt_header, jwt_payload):
+        return is_token_revoked(jwt_header, jwt_payload)
+
+    @jwt.revoked_token_loader
+    def _revoked(_h, _p):
+        return jsonify(
+            error="Sesi Anda telah dicabut karena perubahan kata sandi atau status akun. Silakan masuk kembali."
+        ), 401
 
     class ApiPrefixMiddleware:
         def __init__(self, wsgi_app):

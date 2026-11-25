@@ -55,24 +55,25 @@ pip install -r requirements.txt
 ```
 
 ### 1.4 Periksa File Konfigurasi `.env`:
-Pastikan file `.env` di dalam folder `backend-dashboard-dpw` sudah terisi:
+Pastikan file `.env` di dalam folder `backend-dashboard-dpw` sudah terisi (gunakan nilai acak yang kuat minimal 16+ karakter di produksi):
 ```env
 FLASK_ENV=development
-SECRET_KEY=kunci-rahasia-aplikasi-anda
-JWT_SECRET_KEY=kunci-jwt-rahasia-anda
-JWT_ACCESS_HOURS=12
+SECRET_KEY=<KUNCI_RAHASIA_APLIKASI_MIN_16_KARAKTER>
+JWT_SECRET_KEY=<KUNCI_JWT_RAHASIA_MIN_16_KARAKTER>
+JWT_ACCESS_DAYS=30
 CORS_ORIGINS=http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173
 
 # Koneksi Database PostgreSQL:
-DATABASE_URL=postgresql://postgres.fansmsmlfzuvnktyjlef:DPWsulut115@aws-0-ap-northeast-2.pooler.supabase.com:5432/postgres
+DATABASE_URL=postgresql+psycopg2://<DB_USER>:<DB_PASSWORD>@<DB_HOST>:<DB_PORT>/<DB_NAME>
 
 # Seed Super Admin
-SEED_ADMIN_USERNAME=7106033003050001
-SEED_ADMIN_PASSWORD=NasDem15
+SEED_ADMIN_USERNAME=<USERNAME_ATAU_NIK_SUPER_ADMIN>
+SEED_ADMIN_PASSWORD=<PASSWORD_SUPER_ADMIN_KUAT_MIN_12_KARAKTER>
 
-# Google Gemini Flash AI (Pembersihan Data)
-GEMINI_API_KEY=AQ.Ab8RN6Iy6Ow-Unsnry7bEyvVPY380gGDEWFvpXkCpmPFzZDnSA
-GEMINI_MODEL=gemini-flash-latest
+# Integrasi Portal e-KTA DPP Pusat
+DPP_BASE_URL=https://digital.partainasdem.id/v1
+DPP_ADMIN_EMAIL=<EMAIL_OPERATOR_DPP>
+DPP_ADMIN_PASSWORD=<PASSWORD_OPERATOR_DPP>
 ```
 
 ### 1.5 Buat / Reset Akun Super Admin (Jika Diperlukan):
@@ -125,16 +126,16 @@ VITE_API_URL=http://localhost:5000/api
 ```bash
 npm run dev
 ```
-> **Frontend Aktif di:** `http://localhost:5173`  
-> Buka browser dan buka alamat: `http://localhost:5173`
+> **Frontend Aktif di:** `http://localhost:3000`  
+> Buka browser dan buka alamat: `http://localhost:3000`
 
 ---
 
 ## Akun Login Default (Super Admin)
 
-Gunakan akun berikut di halaman Login:
-* **Username / NIK**: `7106033003050001`
-* **Password**: `NasDem15`
+Gunakan akun yang telah di-seed melalui `.env` (`SEED_ADMIN_USERNAME` dan `SEED_ADMIN_PASSWORD`) via `python -m scripts.seed_admin`:
+* **Username / NIK**: sesuai nilai `SEED_ADMIN_USERNAME` di `.env`
+* **Password**: sesuai nilai `SEED_ADMIN_PASSWORD` di `.env`
 * **Role**: `SUPER_ADMIN` (Akses penuh ke 15 Kabupaten/Kota se-Sulawesi Utara)
 
 ---
@@ -144,7 +145,7 @@ Gunakan akun berikut di halaman Login:
 | Komponen | Folder | Perintah Terminal | URL Lokal |
 | :--- | :--- | :--- | :--- |
 | **Backend API** | `backend-dashboard-dpw` | `.\venv\Scripts\Activate.ps1`<br>`python wsgi.py` | `http://localhost:5000/api` |
-| **Frontend UI** | `Dashboard-DPW-Sulut` | `npm run dev` | `http://localhost:5173` |
+| **Frontend UI** | `Dashboard-DPW-Sulut` | `npm run dev` | `http://localhost:3000` |
 
 ---
 
@@ -156,7 +157,7 @@ Gunakan akun berikut di halaman Login:
 * `POST /api/members` - Tambah / simpan anggota.
 * `POST /api/members/bulk` - Import massal pengurus dari Excel matriks.
 * `POST /api/members/bulk-delete` - Reset formasi kepengurusan per wilayah.
-* `POST /api/ai/clean` - AI Normalizer & Clustering (Google Gemini Flash).
+* `POST /api/ktp-scanner/scan` - Pemindaian OCR e-KTP (Google Document AI / RapidOCR).
 * `GET /api/audit-logs` - Riwayat log aktivitas dan perubahan status anggota.
 * `GET /api/deletion-requests` - Daftar pengajuan hapus bertingkat.
 * `GET /api/users` - Manajemen akun pengguna (Khusus Super Admin).

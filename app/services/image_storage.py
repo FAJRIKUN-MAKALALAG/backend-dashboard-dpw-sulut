@@ -6,13 +6,96 @@ menyimpan URL link teks pendek di kolom database.
 """
 import base64
 import hashlib
+import hmac
 import io
 import logging
 import os
 import re
 import time
 from typing import Optional, Tuple
+from urllib.parse import urlparse
+from flask import current_app, has_app_context
 from PIL import Image
+
+SENSITIVE_MEDIA_CATEGORIES = ("ktp", "finance")
+DEFAULT_MEDIA_URL_TTL_SECONDS = 43200  # 12 jam
+
+
+def _get_media_signing_secret() -> bytes:
+    """Mengambil kunci penandatangan URL media sensitif (HMAC-SHA256)."""
+    secret = ""
+    if has_app_context():
+        secret = str(current_app.config.get("SECRET_KEY") or "")
+    if not secret:
+        secret = os.getenv("SECRET_KEY", "dev-secret-change-me")
+    return secret.encode("utf-8")
+
+
+def _extract_upload_cat_and_file(url: Optional[str]) -> Optional[Tuple[str, str]]:
+    if not url or not isinstance(url, str):
+        return None
+    raw = url.strip()
+    if not raw or raw.startswith("data:"):
+        return None
+    path = urlparse(raw).path if "://" in raw else raw.split("?", 1)[0]
+    prefix = "/api/uploads/"
+    if not path.startswith(prefix):
+        return None
+    rel_path = path[len(prefix):]
+    parts = rel_path.split("/", 1)
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        return None
+    return parts[0].lower().strip(), parts[1].strip()
+
+
+def strip_media_signature(url: Optional[str]) -> Optional[str]:
+    """Menghapus query ?exp=...&sig=... agar database hanya menyimpan path bersih."""
+    if not url or not isinstance(url, str):
+        return url
+    parsed = _extract_upload_cat_and_file(url)
+    if not parsed:
+        return url
+    cat, filename = parsed
+    return f"/api/uploads/{cat}/{filename}"
+
+
+def sign_media_url(url: Optional[str], ttl_seconds: Optional[int] = None) -> Optional[str]:
+    """Menandatangani URL media sensitif (foto KTP / dokumen) dengan HMAC-SHA256 berbatas waktu."""
+    if not url or not isinstance(url, str):
+        return url
+    parsed = _extract_upload_cat_and_file(url)
+    if not parsed:
+        return url
+    cat, filename = parsed
+    clean_url = f"/api/uploads/{cat}/{filename}"
+    if cat not in SENSITIVE_MEDIA_CATEGORIES:
+        return clean_url
+
+    ttl = ttl_seconds if ttl_seconds is not None else int(os.getenv("MEDIA_URL_TTL_SECONDS", str(DEFAULT_MEDIA_URL_TTL_SECONDS)))
+    exp = int(time.time()) + max(ttl, 60)
+    payload = f"{cat}:{filename}:{exp}".encode("utf-8")
+    sig = hmac.new(_get_media_signing_secret(), payload, hashlib.sha256).hexdigest()
+    return f"{clean_url}?exp={exp}&sig={sig}"
+
+
+def verify_media_signature(
+    category: str,
+    filename: str,
+    exp_raw: Optional[str],
+    sig_raw: Optional[str],
+) -> bool:
+    """Memverifikasi tanda tangan HMAC-SHA256 serta masa berlaku URL media sensitif."""
+    if not category or not filename or not exp_raw or not sig_raw:
+        return False
+    try:
+        exp = int(str(exp_raw).strip())
+    except (TypeError, ValueError):
+        return False
+    if exp < int(time.time()):
+        return False
+    payload = f"{category.lower().strip()}:{filename}:{exp}".encode("utf-8")
+    expected = hmac.new(_get_media_signing_secret(), payload, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, str(sig_raw).strip())
 
 logger = logging.getLogger("nasdem.storage")
 
@@ -176,6 +259,8 @@ def intercept_and_store_member_photos(values: dict, default_nik: Optional[str] =
             logger.info(f"[IMAGE-SUCCESS] Foto Profil untuk NIK {nik} berhasil disimpan di server dan URL siap dicatat di DB: {url}")
         except Exception as e:
             logger.error(f"[IMAGE-ERROR] Gagal memproses berkas Foto Profil untuk NIK {nik}: {e}", exc_info=True)
+    elif foto_profil and isinstance(foto_profil, str):
+        values["foto_profil_url"] = strip_media_signature(foto_profil)
 
     # Proses foto KTP
     foto_ktp = values.get("foto_ktp_url")
@@ -187,6 +272,8 @@ def intercept_and_store_member_photos(values: dict, default_nik: Optional[str] =
             logger.info(f"[IMAGE-SUCCESS] Foto KTP untuk NIK {nik} berhasil disimpan di server dan URL siap dicatat di DB: {url}")
         except Exception as e:
             logger.error(f"[IMAGE-ERROR] Gagal memproses berkas Foto KTP untuk NIK {nik}: {e}", exc_info=True)
+    elif foto_ktp and isinstance(foto_ktp, str):
+        values["foto_ktp_url"] = strip_media_signature(foto_ktp)
 
     return values
 
@@ -235,7 +322,8 @@ def resolve_stored_image_url(url: Optional[str]) -> Optional[str]:
     target_dir = os.path.join(UPLOADS_DIR, cat)
     full_path = os.path.join(target_dir, filename)
     if os.path.isfile(full_path):
-        return url
+        clean_resolved = f"/api/uploads/{cat}/{filename}"
+        return sign_media_url(clean_resolved) if cat in SENSITIVE_MEDIA_CATEGORIES else clean_resolved
 
     marker = f"_{cat}_"
     if marker in filename and os.path.isdir(target_dir):
@@ -253,7 +341,8 @@ def resolve_stored_image_url(url: Optional[str]) -> Optional[str]:
                     key=lambda f: os.path.getmtime(os.path.join(target_dir, f)),
                     reverse=True,
                 )
-                return f"/api/uploads/{cat}/{candidates[0]}"
+                clean_resolved = f"/api/uploads/{cat}/{candidates[0]}"
+                return sign_media_url(clean_resolved) if cat in SENSITIVE_MEDIA_CATEGORIES else clean_resolved
         except OSError:
             pass
     return None

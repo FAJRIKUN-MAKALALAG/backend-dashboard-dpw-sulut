@@ -1,9 +1,11 @@
 from datetime import datetime, timezone
 from flask import Blueprint, jsonify, request
+from flask_jwt_extended import get_jwt, verify_jwt_in_request
 from sqlalchemy import func, desc, or_
 
 from app.auth import current_claims, login_required
 from app.extensions import db
+from app.rate_limit import rate_limit
 from app.models import Member, AppUser
 from app.services.referral_service import (
     find_direct_leader,
@@ -17,6 +19,7 @@ from app.services.referral_service import (
 from app.utils import (
     DELEGATED_ADMIN_ROLES,
     TERRITORIAL_MANAGER_ROLES,
+    member_in_scope,
     member_to_dict,
 )
 
@@ -206,10 +209,22 @@ def get_my_referral_code():
 @bp.get("/referrals/preview-by-nik/<nik>")
 @login_required
 def get_referral_preview_by_nik(nik: str):
-    """Mengambil preview profil referral untuk pengurus tertentu berdasarkan NIK (simulasi/inspeksi portal)."""
+    """Mengambil preview profil referral untuk pengurus tertentu (dibatasi RBAC & scope wilayah)."""
+    claims = current_claims()
+    role = claims.get("role")
+    my_nik = str(claims.get("adminNik") or "").strip()
+
     m = Member.query.filter(Member.nik == str(nik)).first()
     if not m:
         return jsonify(error="Data pengurus tidak ditemukan"), 404
+
+    is_allowed = (
+        role == "SUPER_ADMIN"
+        or (my_nik and str(m.nik).strip() == my_nik)
+        or (role in TERRITORIAL_MANAGER_ROLES and member_in_scope(claims, m))
+    )
+    if not is_allowed:
+        return jsonify(error="Anda tidak memiliki izin melihat pratinjau referral pengurus di luar wilayah Anda"), 403
 
     code = generate_unique_referral_code(m)
     leader = find_direct_leader(m)
@@ -238,31 +253,39 @@ def get_referral_preview_by_nik(nik: str):
 
 
 @bp.get("/referrals/validate/<code>")
+@rate_limit(20, 60, scope="ip", key_prefix="ref_validate")
 def validate_referral_code(code: str):
     """
     Validasi kode referral saat calon anggota baru mendaftar atau admin menginput.
-    Mengembalikan data perekrut dan ketua langsungnya secara real-time.
+    Untuk pemanggil publik tanpa JWT, NIK dan alamat granular tidak diekspos.
     """
     clean_code = (code or "").strip().upper()
     if not clean_code or len(clean_code) < 4:
         return jsonify(valid=False, error="Kode referral tidak valid"), 400
+
+    is_authenticated = False
+    try:
+        verify_jwt_in_request(optional=True)
+        is_authenticated = bool(get_jwt())
+    except Exception:
+        is_authenticated = False
 
     # Khusus kode super admin
     if clean_code in ("NSD-SUP-SUPER", "NSD-ADM-SUPER"):
         return jsonify({
             "valid": True,
             "recruiter": {
-                "nik": "ADMIN-DPW",
+                "nik": "ADMIN-DPW" if is_authenticated else "",
                 "namaLengkap": "Pengurus DPW Partai NasDem",
                 "jabatan": "Pengurus DPW",
                 "tingkatKepengurusan": "DPW",
                 "dpd": "Sulawesi Utara",
-                "dpc": "-",
-                "dprt": "-",
+                "dpc": "-" if is_authenticated else "",
+                "dprt": "-" if is_authenticated else "",
                 "kodeReferral": clean_code,
             },
             "directLeader": {
-                "nik": "0000000000000000",
+                "nik": "0000000000000000" if is_authenticated else "",
                 "nama": "Ketua Umum DPP Partai NasDem",
                 "jabatan": "Ketua Umum DPP",
                 "tingkat": "DPP",
@@ -274,17 +297,19 @@ def validate_referral_code(code: str):
         return jsonify(valid=False, error=f"Kode referral '{clean_code}' tidak ditemukan di database"), 404
 
     leader = find_direct_leader(m)
+    if leader and not is_authenticated:
+        leader = {k: v for k, v in leader.items() if k != "nik"}
 
     return jsonify({
         "valid": True,
         "recruiter": {
-            "nik": m.nik,
+            "nik": m.nik if is_authenticated else "",
             "namaLengkap": m.nama_lengkap,
             "jabatan": m.jabatan,
             "tingkatKepengurusan": m.tingkat_kepengurusan or "DPD",
             "dpd": m.dpd,
-            "dpc": m.dpc,
-            "dprt": m.dprt,
+            "dpc": m.dpc if is_authenticated else "",
+            "dprt": m.dprt if is_authenticated else "",
             "kodeReferral": m.kode_referral,
         },
         "directLeader": leader,

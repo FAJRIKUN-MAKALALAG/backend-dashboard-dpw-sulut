@@ -34,6 +34,44 @@ class DatabaseConfig:
     }
 
 
+_PROD_ORIGINS = (
+    "https://digital.nasdemsulut.io",
+    "http://digital.nasdemsulut.io",
+    "https://nasdemsulut.io",
+    "https://www.nasdemsulut.io",
+)
+
+_DEV_ORIGINS = (
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+)
+
+
+def _parse_cors_origins(include_dev: bool = False) -> list[str]:
+    """Membangun daftar whitelist origin CORS yang ketat (tanpa wildcard '*')."""
+    raw_cors = os.getenv("CORS_ORIGINS", "")
+    parsed: list[str] = []
+    for item in raw_cors.split(","):
+        origin = item.strip().rstrip("/")
+        if not origin or origin == "*":
+            continue
+        if origin not in parsed:
+            parsed.append(origin)
+
+    for prod_origin in _PROD_ORIGINS:
+        if prod_origin not in parsed:
+            parsed.append(prod_origin)
+
+    if include_dev:
+        for dev_origin in _DEV_ORIGINS:
+            if dev_origin not in parsed:
+                parsed.append(dev_origin)
+
+    return parsed
+
+
 class AppConfig(DatabaseConfig):
     SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-change-me")
     JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "dev-jwt-secret-change-me")
@@ -47,23 +85,8 @@ class AppConfig(DatabaseConfig):
         JWT_ACCESS_TOKEN_EXPIRES = timedelta(hours=max(_jwt_hours, 24))
     else:
         JWT_ACCESS_TOKEN_EXPIRES = timedelta(days=_jwt_days if _jwt_days > 0 else 30)
-    _raw_cors = os.getenv("CORS_ORIGINS", "*")
-    if "*" in _raw_cors or not _raw_cors.strip():
-        CORS_ORIGINS = "*"
-    else:
-        _parsed_origins = [o.strip().rstrip("/") for o in _raw_cors.split(",") if o.strip()]
-        # Selalu izinkan domain production resmi NasDem Sulut meskipun .env di VPS masih berisi localhost
-        for _prod_origin in (
-            "https://digital.nasdemsulut.io",
-            "http://digital.nasdemsulut.io",
-            "https://nasdemsulut.io",
-            "https://www.nasdemsulut.io",
-            "http://localhost:5173",
-            "http://localhost:3000",
-        ):
-            if _prod_origin not in _parsed_origins:
-                _parsed_origins.append(_prod_origin)
-        CORS_ORIGINS = _parsed_origins
+
+    CORS_ORIGINS = _parse_cors_origins(include_dev=True)
 
     MAX_PAGE_SIZE = _int("MAX_PAGE_SIZE", 500)
     BULK_CHUNK_SIZE = _int("BULK_CHUNK_SIZE", 1000)
@@ -79,11 +102,49 @@ class AppConfig(DatabaseConfig):
 
 class DevelopmentConfig(AppConfig):
     DEBUG = True
+    CORS_ORIGINS = _parse_cors_origins(include_dev=True)
+
+
+_INSECURE_SECRET_VALUES = {
+    "",
+    "dev-secret-change-me",
+    "dev-jwt-secret-change-me",
+    "changeme",
+    "secret",
+}
 
 
 class ProductionConfig(AppConfig):
     DEBUG = False
+    CORS_ORIGINS = _parse_cors_origins(include_dev=False)
+
+
+def validate_production_secrets(cfg_cls=ProductionConfig):
+    """Fail-fast di mode produksi agar server tidak pernah berjalan dengan secret key default/lemah."""
+    secret_key = (os.getenv("SECRET_KEY") or getattr(cfg_cls, "SECRET_KEY", "") or "").strip()
+    jwt_secret = (os.getenv("JWT_SECRET_KEY") or getattr(cfg_cls, "JWT_SECRET_KEY", "") or "").strip()
+
+    cfg_cls.SECRET_KEY = secret_key
+    cfg_cls.JWT_SECRET_KEY = jwt_secret
+
+    invalid = []
+    if secret_key.lower() in _INSECURE_SECRET_VALUES or len(secret_key) < 16:
+        invalid.append("SECRET_KEY")
+    if jwt_secret.lower() in _INSECURE_SECRET_VALUES or len(jwt_secret) < 16:
+        invalid.append("JWT_SECRET_KEY")
+
+    if invalid:
+        raise RuntimeError(
+            "Konfigurasi produksi tidak aman: variabel "
+            + ", ".join(invalid)
+            + " wajib diatur di environment/.env minimal 16 karakter acak yang kuat."
+        )
 
 
 def get_config():
-    return ProductionConfig if os.getenv("FLASK_ENV") == "production" else DevelopmentConfig
+    if os.getenv("FLASK_ENV") == "production":
+        ProductionConfig.CORS_ORIGINS = _parse_cors_origins(include_dev=False)
+        validate_production_secrets(ProductionConfig)
+        return ProductionConfig
+    DevelopmentConfig.CORS_ORIGINS = _parse_cors_origins(include_dev=True)
+    return DevelopmentConfig

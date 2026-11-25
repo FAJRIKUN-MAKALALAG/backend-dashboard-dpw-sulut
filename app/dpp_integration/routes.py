@@ -4,6 +4,7 @@ import re
 from flask import Blueprint, Response, jsonify, request
 from app.auth import login_required, current_claims
 from app.cache import invalidate_all_data_cache
+from app.rate_limit import rate_limit
 from app.models import AuditLog, Member
 from app.extensions import db
 from app.services.image_storage import intercept_and_store_member_photos
@@ -82,6 +83,7 @@ def get_dpp_wilayah():
 
 @bp.post("/dpp/check-ktp")
 @login_required
+@rate_limit(15, 60, scope="user_or_ip", key_prefix="dpp_check")
 def check_dpp_ktp():
     """Mengecek apakah NIK sudah terdaftar di database pusat Digital NasDem DPP beserta nomor e-KTA resminya."""
     data = request.get_json(silent=True) or {}
@@ -128,6 +130,7 @@ def check_dpp_ktp():
 
 @bp.post("/dpp/sync-existing-kta")
 @login_required
+@rate_limit(15, 60, scope="user_or_ip", key_prefix="dpp_sync")
 def sync_existing_kta():
     """Menarik dan menyinkronkan e-KTA resmi dari DPP Pusat ke data profil di database PostgreSQL."""
     claims = current_claims()
@@ -251,11 +254,28 @@ def sync_existing_kta():
 
 
 @bp.get("/dpp/kta-card/<nokta>")
+@login_required
 def get_dpp_kta_card(nokta: str):
-    """Mengambil citra kartu e-KTA resmi langsung dari server DPP (PNG)."""
+    """Mengambil citra kartu e-KTA resmi langsung dari server DPP (PNG) secara terautentikasi."""
+    claims = current_claims()
     clean_kta = re.sub(r"\D", "", str(nokta or ""))
     if not clean_kta:
         return jsonify(error="Nomor e-KTA tidak valid"), 400
+
+    role = claims.get("role")
+    try:
+        local_m = Member.query.filter(Member.nomor_ekta == clean_kta).first()
+    except Exception:
+        local_m = None
+
+    if role == "ANGGOTA":
+        my_nik = str(claims.get("adminNik") or "").strip()
+        if not local_m or local_m.nik != my_nik:
+            return jsonify(error="Akses kartu e-KTA kader lain ditolak"), 403
+    elif role in ("ADMIN_INVENTORY", "INVENTORY", "WAKIL_BENDAHARA"):
+        return jsonify(error="Akun operasional tidak memiliki akses ke kartu e-KTA DPP"), 403
+    elif local_m and not member_in_scope(claims, local_m):
+        return jsonify(error="Kartu e-KTA kader ini berada di luar cakupan wilayah Anda"), 403
 
     client = get_dpp_client()
     img_bytes = client.fetch_kta_card_image(clean_kta)
@@ -263,7 +283,7 @@ def get_dpp_kta_card(nokta: str):
         return jsonify(error="Kartu e-KTA belum tersedia atau tidak ditemukan di server DPP"), 404
 
     download = request.args.get("download") == "1"
-    headers = {"Cache-Control": "public, max-age=3600"}
+    headers = {"Cache-Control": "private, no-store"}
     if download:
         headers["Content-Disposition"] = f'attachment; filename="eKTA_NasDem_{clean_kta}.png"'
 
@@ -272,6 +292,7 @@ def get_dpp_kta_card(nokta: str):
 
 @bp.post("/dpp/create-kta")
 @login_required
+@rate_limit(15, 60, scope="user_or_ip", key_prefix="dpp_create")
 def create_kta_endpoint():
     """Menerbitkan nomor e-KTA resmi dari portal Digital NasDem DPP dengan pembatasan wilayah ketat."""
     claims = current_claims()
